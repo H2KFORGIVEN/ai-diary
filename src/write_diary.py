@@ -25,10 +25,11 @@ CONFIG = yaml.safe_load((DIARY_ROOT / "config" / "settings.yaml").read_text())
 TAGS_CONFIG = yaml.safe_load((DIARY_ROOT / "config" / "tags.yaml").read_text())
 
 ALL_TAGS = (
-    TAGS_CONFIG.get("emotions", [])
-    + TAGS_CONFIG.get("occasions", [])
-    + TAGS_CONFIG.get("people", [])
-    + TAGS_CONFIG.get("custom", [])
+    (TAGS_CONFIG.get("emotions") or [])
+    + (TAGS_CONFIG.get("occasions") or [])
+    + (TAGS_CONFIG.get("people") or [])
+    + (TAGS_CONFIG.get("events") or [])
+    + (TAGS_CONFIG.get("custom") or [])
 )
 
 
