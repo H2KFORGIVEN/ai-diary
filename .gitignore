@@ -1,0 +1,29 @@
+# ============================================================
+# ai-diary — .gitignore
+# 以下全部屬於個人私密資料，絕對不進 repo
+# ============================================================
+
+# 日記本體（個人記憶，不開源）
+diary/20*/
+diary/summaries/
+
+# 自我敘事（個人身份）
+diary/self-narrative.md
+
+# 未鞏固事件紀錄
+diary/raw_buffer.jsonl
+diary/buffer.jsonl
+diary/buffer.json
+
+# ROI 索引（含日記摘要）
+diary/index/
+
+# Python cache
+src/__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# 如果有人在本地測試時建立的臨時檔案
+*.tmp
+*.bak

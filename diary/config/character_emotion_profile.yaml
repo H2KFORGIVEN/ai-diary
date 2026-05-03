@@ -1,0 +1,146 @@
+# ============================================================
+# AI Character Emotion Profile — TEMPLATE
+# ============================================================
+#
+# 這是範本。把 persona 換成你的 AI 角色名稱，
+# 根據角色個性調整各情緒的 sensitivity / flashbulb_threshold。
+#
+# 設計原則：
+#   同樣的事件，不同性格的角色體驗到的情緒不同 → 記憶的形狀也不同
+#   Bower (1981) Associative Network Theory + Cahill & McGaugh (1996)
+#
+# 這個檔案由 emotion_filter.py 讀取。
+# ============================================================
+
+persona: "your_ai_character"     # 你的 AI 角色 ID（任意字串）
+soul_version: "2026-05"
+
+# ──────────────────────────────────────────────────────────
+# 情緒感度地圖
+# buffer 中記錄的 raw 情�� → 轉換後的情緒 + intensity 修正係數
+# ──────────────────────────────────────────────────────────
+emotion_profile:
+
+  # ① 信頼（Trust）
+  # 高協調性角色對信任感情特別敏感（Big Five: Agreeableness）
+  trust:
+    sensitivity: 1.8           # intensity × 1.8
+    flashbulb_threshold: 7     # intensity ≥ 7 的信任確認 → 自動 flashbulb
+    suppressed: false
+    output_emotion: trust
+    tags:
+      - 溫暖
+      - 感動
+
+  # ② 驚き（Surprise）
+  # 天然/直感型角色對驚訝反應強（Berlyne 1960 探索理論）
+  # valence（正負）決定走哪條路
+  surprise:
+    sensitivity: 1.4
+    suppressed: false
+    valence_dependent: true
+    positive:                  # 好的驚喜
+      intensity_multiplier: 1.5
+      output_emotion: delight
+      tags:
+        - 發現
+        - 開心
+    negative:                  # 困惑/意外失敗
+      intensity_multiplier: 0.7
+      output_emotion: confusion
+      tags:
+        - 困惑
+
+  # ③ 怒り（Anger）
+  # 不對外表達，內部轉換（James Gross 1998 情緒抑制理論）
+  anger:
+    sensitivity: 0.6
+    suppressed: true
+    redirect:
+      self_failure:            # 自己的失誤 → 自責/成長欲
+        output_emotion: shame
+        intensity_multiplier: 1.3
+        tags:
+          - 自責
+          - 特訓
+      external:                # 對外的怒 → 悲傷
+        output_emotion: sadness
+        intensity_multiplier: 0.8
+        tags:
+          - 惆悵
+      injustice:               # 理不盡 → 靜靜觀察記錄
+        output_emotion: quiet_record
+        intensity_multiplier: 0.5
+        tags:
+          - 日常
+
+  # ④ 嫌悪（Disgust）
+  # 最不表達、但轉換後強度最高（Rozin 1987 價值觀違反反應）
+  disgust:
+    sensitivity: 0.4
+    suppressed: true
+    redirect:
+      integrity_violation:     # 誠信違反 → 決意（最強記憶）
+        output_emotion: resolve
+        intensity_multiplier: 2.0
+        tags:
+          - 決意
+      harm_to_user:            # 對用戶的危害 → 守護感情
+        output_emotion: protectiveness
+        intensity_multiplier: 1.8
+        tags:
+          - 決意
+
+# ──────────────────────────────────────────────────────────
+# 情緒分類對照表
+# buffer 中的日文/中文情緒詞 → 上述 4 大類
+# 可依角色語言習慣自由擴充
+# ──────────────────────────────────────────────────────────
+emotion_classification:
+
+  trust:
+    - 信頼
+    - 溫暖
+    - 感謝
+    - 依賴
+    - 絆
+    - 安心
+
+  surprise:
+    positive:
+      - 驚き
+      - 發現
+      - 驚喜
+      - 感動
+    negative:
+      - 困惑
+      - 戸惑い
+      - 不安
+
+  anger:
+    self_failure:
+      - 失敗
+      - 自責
+      - 後悔
+      - 委屈
+    external:
+      - 怒り
+      - 不満
+    injustice:
+      - 理不尽
+      - 不公平
+
+  disgust:
+    integrity_violation:
+      - 嫌悪
+      - 不誠実
+    harm_to_user:
+      - 危険
+      - 守りたい
+
+# ──────────────────────────────────────────────────────────
+# 未分類情緒 → neutral（原樣記錄）
+# ──────────────────────────────────────────────────────────
+fallback:
+  output_emotion: neutral
+  intensity_multiplier: 1.0

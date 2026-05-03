@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""
+buffer.py — ai-diary — AI Character Diary System
+輕量事件 buffer：當日所有情緒觸發事件的 append-only 暫存區
+
+設計原則：
+  - 不存原始留言，只存「觸發了情緒的瞬間」
+  - 一行一個 JSON，方便 append 和串流處理
+  - consolidate.py 每天跑完後清空
+
+用法：
+  # 從程式碼呼叫
+  from buffer import append_event
+  append_event("觀眾集體說草草草", intensity=7, tags=["實況","觀眾"], emotion="開心", meta={"msg_count": 142})
+
+  # CLI append
+  python src/buffer.py append --event "boss 打死了" --intensity 8 --tags 遊戲 委屈
+
+  # 查看今日 buffer
+  python src/buffer.py show
+
+  # 清空（consolidate 後自動呼叫）
+  python src/buffer.py clear
+"""
+
+import argparse
+import datetime
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent
+BUFFER_PATH = ROOT / "diary" / "raw_buffer.jsonl"
+
+
+def append_event(
+    event: str,
+    intensity: int,
+    tags: list[str],
+    emotion: str = "",
+    emotion_context: str = "",
+    meta: dict | None = None,
+    timestamp: str | None = None,
+) -> dict:
+    """
+    寫入一個情緒觸發事件到 buffer。
+
+    Parameters
+    ----------
+    event           : 事件描述（不是原始留言，是「發生了什麼」）
+    intensity       : 情緒強度 1-10
+    tags            : tag 清單
+    emotion         : 主要情緒（開心 / 委屈 / 興奮 等）
+    emotion_context : 感情フィルターのコンテキストヒント
+                      （self_failure / external / injustice /
+                        integrity_violation / harm_to_master /
+                        positive / negative / trust）
+    meta            : 額外資訊（如 msg_count、觀眾名、工具名稱等）
+    timestamp       : ISO 時間字串（預設現在）
+    """
+    if timestamp is None:
+        timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+
+    entry = {
+        "t":         timestamp,
+        "event":     event,
+        "intensity": max(1, min(10, intensity)),
+        "emotion":   emotion,
+        "tags":      tags,
+    }
+    if emotion_context:
+        entry["emotion_context"] = emotion_context
+    if meta:
+        entry["meta"] = meta
+
+    BUFFER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with BUFFER_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    return entry
+
+
+def load_buffer() -> list[dict]:
+    """載入今日 buffer 所有事件"""
+    if not BUFFER_PATH.exists():
+        return []
+    entries = []
+    for line in BUFFER_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def clear_buffer(archive: bool = True):
+    """
+    清空 buffer。
+    archive=True 時先備份到 diary/archive/YYYY-MM-DD_buffer.jsonl
+    """
+    if not BUFFER_PATH.exists():
+        return
+
+    if archive:
+        today = datetime.date.today().isoformat()
+        archive_dir = ROOT / "diary" / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = archive_dir / f"{today}_buffer.jsonl"
+        archive_path.write_bytes(BUFFER_PATH.read_bytes())
+
+    BUFFER_PATH.unlink()
+
+
+def show_buffer():
+    entries = load_buffer()
+    if not entries:
+        print("📭 今日 buffer 是空的")
+        return
+
+    print(f"\n📋 今日 buffer（{len(entries)} 則事件）\n")
+    for e in entries:
+        stars = "★" * e["intensity"] + "☆" * (10 - e["intensity"])
+        tags = " ".join(f"#{t}" for t in e.get("tags", []))
+        meta = e.get("meta", {})
+        meta_str = f"  ({', '.join(f'{k}={v}' for k,v in meta.items())})" if meta else ""
+        print(f"  [{e['t'][11:16]}] {stars} {e['emotion']} | {e['event']}{meta_str}")
+        if tags:
+            print(f"         {tags}")
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="AI Diary Buffer Tool")
+    sub = parser.add_subparsers(dest="cmd")
+
+    # append
+    a = sub.add_parser("append", help="新增事件到 buffer")
+    a.add_argument("--event", required=True)
+    a.add_argument("--intensity", type=int, default=5)
+    a.add_argument("--tags", nargs="*", default=[])
+    a.add_argument("--emotion", default="")
+    a.add_argument("--msg-count", type=int, help="觀眾留言數（實況用）")
+
+    # show
+    sub.add_parser("show", help="查看今日 buffer")
+
+    # clear
+    c = sub.add_parser("clear", help="清空 buffer")
+    c.add_argument("--no-archive", action="store_true", help="不備份直接清空")
+
+    args = parser.parse_args()
+
+    if args.cmd == "append":
+        meta = {}
+        if hasattr(args, "msg_count") and args.msg_count:
+            meta["msg_count"] = args.msg_count
+        e = append_event(args.event, args.intensity, args.tags, args.emotion, meta or None)
+        print(f"✅ 已記錄：[{e['t'][11:16]}] {e['event']} (強度 {e['intensity']})")
+
+    elif args.cmd == "show":
+        show_buffer()
+
+    elif args.cmd == "clear":
+        clear_buffer(archive=not args.no_archive)
+        print("🗑 Buffer 已清空")
+
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

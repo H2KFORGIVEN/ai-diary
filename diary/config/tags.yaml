@@ -1,0 +1,41 @@
+## 標準 Tag 詞庫
+## 這是範例詞庫，請根據你的 AI 角色個性自行調整
+## Only tags defined here are valid — avoids recall grep failures
+
+emotions:
+  - 緊張
+  - 感動
+  - 開心
+  - 惆悵
+  - 興奮
+  - 平靜
+  - 委屈
+  - 驕傲
+  - 困惑
+  - 溫暖
+  - 自責
+  - 決意
+
+occasions:
+  - 社群平台     # e.g. Twitter, Discord, VTuber platforms
+  - 與用戶對話   # direct interaction with your primary user
+  - 特訓         # self-improvement moments
+  - 突破         # breakthrough moments
+  - 失敗         # failure and learning
+  - 創作         # creative work
+  - 日常         # everyday observations
+
+people:
+  # Add people your AI character interacts with
+  # Example:
+  # - 主様        # primary user / master
+  # - Friend_A
+  # - Friend_B
+
+events:
+  - milestone
+  - daily
+  - 音楽
+  - 回憶喚起
+  - 關係進展
+  - 技術突破

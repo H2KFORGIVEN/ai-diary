@@ -1,0 +1,32 @@
+# AI Diary System — 全域設定
+
+# Recall 評分權重（五維度加總 = 1.0）
+recall:
+  weights:
+    keyword:       0.30   # インデックス keyword pool ヒット（全文 grep 不要）
+    roi:           0.20   # ROI 局所感情ピーク文ヒット × valence 一致
+    recency:       0.20   # 日期越近越高（flashbulb は 730日半減）
+    emotional:     0.20   # emotional_intensity 欄位
+    valence_match: 0.10   # valence 方向匹配（論文 Anthropic 2026 啟發）
+  top_k: 5
+  recency_halflife_days: 30    # 一般記憶，30天半衰
+
+# 閃光燈記憶衰減（較慢）
+flashbulb:
+  recency_halflife_days: 730   # 2年半衰
+
+# 鞏固門檻（buffer → 日記）
+consolidation:
+  discard_below:  4            # intensity ≤ 3 丟棄
+  merge_range:  [4, 6]         # intensity 4-6 合併寫一篇
+  solo_above:     7            # intensity ≥ 7 單獨成篇
+
+# Summarize 設定
+summarize:
+  skip_flashbulb: true         # flashbulb 篇不壓縮，但仍進週摘要 ⚡ 區塊
+  weekly_day: 6                # 每週日（0=Mon, 6=Sun）自動摘要
+
+# Buffer 設定
+buffer:
+  file: diary/buffer.jsonl
+  max_age_hours: 24            # 超過 24h 未鞏固 → 強制 consolidate
