@@ -4,6 +4,8 @@
 
 No vector databases. No heavy infrastructure. Just Markdown files, cognitive science, and a little bit of soul.
 
+English | [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
+
 ---
 
 ## Philosophy
