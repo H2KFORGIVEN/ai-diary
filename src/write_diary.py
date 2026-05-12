@@ -24,6 +24,13 @@ if str(ROOT / "src") not in sys.path:
 CONFIG = yaml.safe_load((DIARY_ROOT / "config" / "settings.yaml").read_text())
 TAGS_CONFIG = yaml.safe_load((DIARY_ROOT / "config" / "tags.yaml").read_text())
 
+# Phase B: entity resolver（tags 正規化）
+try:
+    from entity_resolver import normalize_tags as _normalize_tags
+    _ENTITY_RESOLVER_AVAILABLE = True
+except ImportError:
+    _ENTITY_RESOLVER_AVAILABLE = False
+
 ALL_TAGS = (
     (TAGS_CONFIG.get("emotions") or [])
     + (TAGS_CONFIG.get("occasions") or [])
@@ -67,6 +74,7 @@ def build_frontmatter(
         "never_compress": flashbulb,
         "recall_count": 0,
         "last_recalled": None,
+        "decay_weight": 1.0,  # Phase A: 初始值 1.0，每晚 consolidate 批次衰減更新
     }
     if flashbulb and first_reaction:
         fm["first_reaction"] = first_reaction
@@ -88,6 +96,10 @@ def write_entry(
     if dt is None:
         dt = datetime.datetime.now()
     path = get_entry_path(dt)
+
+    # Phase B: tags 正規化（把已知別名換成 canonical 名稱）
+    if _ENTITY_RESOLVER_AVAILABLE:
+        tags = _normalize_tags(tags)
 
     fm = build_frontmatter(title, tags, intensity, flashbulb, first_reaction, dt,
                            valence=valence, arousal=arousal,

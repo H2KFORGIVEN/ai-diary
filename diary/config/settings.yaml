@@ -21,7 +21,7 @@ consolidation:
   merge_range:  [4, 6]         # intensity 4-6 合併寫一篇
   solo_above:     7            # intensity ≥ 7 單獨成篇
 
-# Summarize 設定
+# ── Summarize 設定
 summarize:
   skip_flashbulb: true         # flashbulb 篇不壓縮，但仍進週摘要 ⚡ 區塊
   weekly_day: 6                # 每週日（0=Mon, 6=Sun）自動摘要
@@ -30,3 +30,19 @@ summarize:
 buffer:
   file: diary/buffer.jsonl
   max_age_hours: 24            # 超過 24h 未鞏固 → 強制 consolidate
+
+# Phase A: 時間衰減（decay_weight）設定
+decay:
+  # 基礎 importance（由 emotional_intensity 換算）
+  # 最終衰減值 = max(base_importance × exp(-ln2 × days / halflife), floor)
+  halflife_by_intensity:
+    flashbulb:   730           # 閃光燈：2年半衰
+    high:        90            # intensity 8-9：3個月半衰
+    medium:      60            # intensity 6-7：2個月半衰
+    normal:      30            # intensity 1-5：1個月半衰
+  floor_by_intensity:
+    flashbulb:   0.50          # 閃光燈永不低於 0.50
+    high:        0.15          # intensity 8-9 永不低於 0.15
+    medium:      0.10          # intensity 6-7 永不低於 0.10
+    normal:      0.05          # 一般永不低於 0.05
+  recall_boost:  0.10          # 每次被 recall 時 decay_weight 活化 +0.10

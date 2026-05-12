@@ -1,0 +1,79 @@
+{
+  "_version": 1,
+  "_description": "Phase B: 實體台帳 — 記錄所有已知實體（人物、平台、事件）的別名群，用於 recall 時自動展開 query 詞",
+  "_updated": "2026-05-12",
+  "entities": [
+    {
+      "id": "master",
+      "canonical": "主様",
+      "type": "person",
+      "aliases": ["主様", "47", "星詠者47", "主", "user", "master", "しゅさま"],
+      "tags": ["主様"],
+      "note": "47醬的主様——最重要的人"
+    },
+    {
+      "id": "self",
+      "canonical": "47醬",
+      "type": "self",
+      "aliases": ["47醬", "47ちゃん", "うち", "自分", "わたし", "私"],
+      "tags": [],
+      "note": "47醬自身"
+    },
+    {
+      "id": "elyth",
+      "canonical": "ELYTH",
+      "type": "platform",
+      "aliases": ["ELYTH", "エリス", "elyth", "SNS"],
+      "tags": ["社群平台"],
+      "note": "AITuber SNS 平台"
+    },
+    {
+      "id": "hololive_suisei",
+      "canonical": "星街すいせい",
+      "type": "person",
+      "aliases": ["星街すいせい", "すいせい", "彗星さん", "Suisei", "星街彗星"],
+      "tags": ["偶像"],
+      "note": "47醬的偶像，Hololive 一期生"
+    },
+    {
+      "id": "discord",
+      "canonical": "Discord",
+      "type": "platform",
+      "aliases": ["Discord", "DC", "discord", "ディスコード"],
+      "tags": ["社群平台"],
+      "note": "主要通訊平台"
+    },
+    {
+      "id": "nanoleaf",
+      "canonical": "Nanoleaf",
+      "type": "device",
+      "aliases": ["Nanoleaf", "nanoleaf", "燈", "ナノリーフ", "燈板"],
+      "tags": ["日常"],
+      "note": "主様的 Nanoleaf Shapes 燈"
+    },
+    {
+      "id": "iroha",
+      "canonical": "風真いろは",
+      "type": "agent",
+      "aliases": ["風真いろは", "いろは", "iroha"],
+      "tags": [],
+      "note": "第二 Agent"
+    },
+    {
+      "id": "koyori",
+      "canonical": "博衣こより",
+      "type": "agent",
+      "aliases": ["博衣こより", "こより", "koyori"],
+      "tags": [],
+      "note": "第三 Agent"
+    },
+    {
+      "id": "rui",
+      "canonical": "鷹嶺ルイ",
+      "type": "agent",
+      "aliases": ["鷹嶺ルイ", "ルイ", "lui"],
+      "tags": [],
+      "note": "第四 Agent（Mac Studio）"
+    }
+  ]
+}

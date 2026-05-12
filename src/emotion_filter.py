@@ -73,6 +73,45 @@ def classify_emotion(emotion: str) -> tuple[str, str]:
     return "fallback", ""
 
 
+# ── emotion → valence 自動對應表 ───────────────────────────────────────────
+# category/sub 決定的 valence 基準值（-10 ～ +10）
+# 這是「情緒的正負方向」，不是強度本身
+_VALENCE_MAP: dict[tuple[str, str], int] = {
+    # trust：對主様的信任感、溫暖、感動 → 強正向
+    ("trust",   ""):                     8,
+    # surprise positive：好的驚喜、發現 → 中正向
+    ("surprise","positive"):             6,
+    # surprise negative：困惑、意外 → 輕微負向
+    ("surprise","negative"):            -2,
+    # anger/自責 → 負向（shame 的感覺）
+    ("anger",   "self_failure"):        -4,
+    # anger/external → 中負向（被外部傷到）
+    ("anger",   "external"):            -5,
+    # anger/injustice → 輕微負向（靜靜記錄）
+    ("anger",   "injustice"):           -2,
+    # disgust → 強負向
+    ("disgust", "integrity_violation"): -7,
+    ("disgust", "harm_to_master"):      -8,
+    # fallback：不明情緒 → 中性
+    ("fallback",""):                     0,
+}
+
+
+def emotion_to_valence(category: str, sub: str, intensity: int) -> int:
+    """
+    category + sub + intensity → valence（-10 ～ +10）
+
+    intensity 越高，valence 的絕對值越大（往極端走）。
+    公式：base_valence × (0.7 + 0.3 × intensity/10)
+    例：trust intensity=9 → base=8 → 8 × (0.7+0.27) = 7.76 → 8
+        trust intensity=3 → base=8 → 8 × (0.7+0.09) = 6.32 → 6
+    """
+    base = _VALENCE_MAP.get((category, sub), _VALENCE_MAP.get((category, ""), 0))
+    scale = 0.7 + 0.3 * (intensity / 10)
+    raw = base * scale
+    return max(-10, min(10, round(raw)))
+
+
 def apply_filter(
     emotion: str,
     intensity: int,
@@ -95,6 +134,7 @@ def apply_filter(
     dict with:
       emotion   : 変換後の感情語
       intensity : 補正済み強度（1-10 にクランプ）
+      valence   : -10（極負）～ +10（極正）— Nanoleaf 燈色連動用
       tags      : 追加タグ（profile 由来 + extra）
       flashbulb : bool（trust の場合のみ閾値判定）
       note      : 変換ログ（デバッグ用）
@@ -182,9 +222,13 @@ def apply_filter(
             dedup_tags.append(t)
             seen.add(t)
 
+    # valence 自動計算（category + sub + 補正後 intensity → -10～+10）
+    valence = emotion_to_valence(category, sub, new_intensity)
+
     return {
         "emotion":   result_emotion,
         "intensity": new_intensity,
+        "valence":   valence,
         "tags":      dedup_tags,
         "flashbulb": is_flashbulb,
         "note":      note,

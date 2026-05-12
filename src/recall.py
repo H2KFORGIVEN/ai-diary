@@ -44,6 +44,8 @@ HALFLIFE_FLASHBULB = CONFIG["flashbulb"]["recency_halflife_days"]   # 730日
 import sys
 sys.path.insert(0, str(ROOT / "src"))
 from roi import load_index, update_index_entry
+from entity_resolver import expand as entity_expand  # Phase B
+from build_tag_graph import load_tag_graph, get_related_ids  # Phase C
 
 
 # ── スコアリング関数 ──────────────────────────────────────────────────
@@ -120,10 +122,19 @@ def roi_score(query_words: list[str], entry: dict, query_valence: int) -> float:
 
 def recall_score_from_index(query_words: list[str], entry: dict,
                              query_valence: int = 0) -> float:
-    """インデックスエントリから直接スコアを計算（.md 読込不要）"""
+    """インデックスエントリから直接スコアを計算（.md 読込不要）
+
+    Phase A: recency 次元を decay_weight（stored）で置換。
+      - decay_weight が存在する場合はそれを使用（毎晩 consolidate で更新済み）
+      - 存在しない場合は従来の即時計算 recency_score にフォールバック
+    """
     k  = keyword_score(query_words, entry)
     ri = roi_score(query_words, entry, query_valence)
-    r  = recency_score(entry.get("date", ""), entry.get("flashbulb", False))
+    # Phase A: stored decay_weight 優先、fallback は即時 recency
+    if "decay_weight" in entry:
+        r = float(entry["decay_weight"])
+    else:
+        r = recency_score(entry.get("date", ""), entry.get("flashbulb", False))
     e  = emotional_score(entry)
     v  = valence_score(entry, query_valence)
     w  = WEIGHTS
@@ -137,13 +148,25 @@ def recall_score_from_index(query_words: list[str], entry: dict,
 # ── meta 更新（上位 K 件のみ .md を読む） ────────────────────────────
 
 def _update_recall_meta_by_path(path: Path):
-    """recall_count / last_recalled を .md frontmatter に書き戻す"""
+    """recall_count / last_recalled / decay_weight を .md frontmatter に書き戻す
+
+    Phase A: recall_count 更新時に decay_weight も活化（+recall_boost, 上限 1.0）
+    """
     try:
         text = path.read_text(encoding="utf-8")
         _, fm_str, body = text.split("---", 2)
         fm = yaml.safe_load(fm_str)
         fm["recall_count"] = fm.get("recall_count", 0) + 1
         fm["last_recalled"] = datetime.datetime.now().strftime("%Y-%m-%d")
+
+        # Phase A: decay_weight 活化
+        cfg = yaml.safe_load(
+            (Path(__file__).parent.parent / "diary" / "config" / "settings.yaml").read_text()
+        )
+        boost = cfg.get("decay", {}).get("recall_boost", 0.10)
+        old_dw = float(fm.get("decay_weight", 1.0))
+        fm["decay_weight"] = round(min(1.0, old_dw + boost), 4)
+
         fm_str_new = yaml.dump(fm, allow_unicode=True, sort_keys=False)
         path.write_text(f"---\n{fm_str_new}---{body}", encoding="utf-8")
         # インクリメンタルインデックス更新
@@ -183,6 +206,10 @@ def format_result(rank: int, entry: dict, score: float) -> str:
         f"📔 {entry.get('title', '（無標題）')}",
         f"🏷  {tags}  |  強度: {intensity}/10{va_str}",
     ]
+    # Phase A: decay_weight 顯示
+    dw = entry.get("decay_weight")
+    if dw is not None:
+        lines[1] += f"  decay={dw:.3f}"
     if suppressed:
         lines.append(f"🤫 壓抑: {suppressed}")
     if first_reaction:
@@ -204,32 +231,155 @@ def format_result(rank: int, entry: dict, score: float) -> str:
 def run_recall(query: str, top_k: int, tag_filter: str | None,
                update_meta: bool, query_valence: int = 0) -> list[tuple[float, dict]]:
     """
-    高速 5 次元 recall。
+    Phase C 升級版三層 recall。
 
-    パフォーマンス：
-      - 全スコアリングはインデックス（メモリ内）のみ
-      - .md ファイル読込は update_meta=True の上位 K 件のみ
+    Layer 1 — RRF 合議（多策略排名融合）：
+      - Strategy A：原始 query（五維度）
+      - Strategy B：keyword-only（純關鍵詞，不看 valence）
+      - Strategy C：valence-only（純情緒方向匹配）
+      RRF 公式：score = Σ 1 / (k + rank_i)，k=60
+
+    Layer 2 — Tag Graph 擴散：
+      被 Strategy A 召回的前 3 篇，找出其 tag 相關日記，給予 TAG_BOOST
+
+    Layer 3 — MMR 多樣性過濾：
+      Maximum Marginal Relevance，避免結果全是同一天的記憶
+      λ=0.7（相關性 vs 多樣性的平衡）
     """
+    RRF_K = 60
+    TAG_BOOST = 0.05
+    MMR_LAMBDA = 0.7
+    # 最大相似度門檻：同一天、同 title 前綴的記憶視為「過於相似」
+    MMR_SIM_THRESHOLD = 0.6
+
     entries = load_index()
 
     if tag_filter:
         entries = filter_by_tag(entries, tag_filter)
 
+    if not entries:
+        return []
+
     query_words = query.split() if query else []
-    scored = [
-        (recall_score_from_index(query_words, e, query_valence), e)
+    # Phase B: entity 展開
+    if query_words:
+        query_words = entity_expand(query_words)
+
+    # ── Layer 1: RRF ────────────────────────────────────────────────
+    # Strategy A: 完整五維度
+    scores_a = {
+        e["id"]: recall_score_from_index(query_words, e, query_valence)
         for e in entries
-    ]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top = scored[:top_k]
+    }
+    ranked_a = sorted(scores_a.items(), key=lambda x: x[1], reverse=True)
+
+    # Strategy B: keyword-only（ROI + keyword，忽略 valence/recency/emotional）
+    scores_b = {
+        e["id"]: (
+            WEIGHTS.get("keyword", 0.30) * keyword_score(query_words, e)
+            + WEIGHTS.get("roi", 0.20) * roi_score(query_words, e, 0)
+        )
+        for e in entries
+    }
+    ranked_b = sorted(scores_b.items(), key=lambda x: x[1], reverse=True)
+
+    # Strategy C: valence + emotional（情緒方向）
+    scores_c = {
+        e["id"]: (
+            WEIGHTS.get("emotional", 0.20) * emotional_score(e)
+            + WEIGHTS.get("valence_match", 0.10) * valence_score(e, query_valence)
+        )
+        for e in entries
+    }
+    ranked_c = sorted(scores_c.items(), key=lambda x: x[1], reverse=True)
+
+    # RRF 合票
+    rrf_scores: dict[str, float] = {}
+    for rank, (eid, _) in enumerate(ranked_a):
+        rrf_scores[eid] = rrf_scores.get(eid, 0.0) + 1.0 / (RRF_K + rank + 1)
+    for rank, (eid, _) in enumerate(ranked_b):
+        rrf_scores[eid] = rrf_scores.get(eid, 0.0) + 1.0 / (RRF_K + rank + 1)
+    for rank, (eid, _) in enumerate(ranked_c):
+        rrf_scores[eid] = rrf_scores.get(eid, 0.0) + 1.0 / (RRF_K + rank + 1)
+
+    # ── Layer 2: Tag Graph 擴散 ──────────────────────────────────────
+    if query_words:  # 無 query 時不做擴散（避免無意義 boost）
+        tag_graph = load_tag_graph()
+        # 取 Strategy A 前 3 名，找出其 tag 相關日記
+        top3_ids = [eid for eid, _ in ranked_a[:3]]
+        # 各 seed 只取前 MAX_RELATED_PER_SEED 筆（避免超熱 tag 覆蓋全庫）
+        MAX_RELATED_PER_SEED = 3
+        boosted_ids: set[str] = set()
+        for seed_id in top3_ids:
+            related = get_related_ids(seed_id, tag_graph)
+            # 優先選 Strategy A 排名較高的相關日記
+            related_sorted = sorted(related, key=lambda x: scores_a.get(x, 0.0), reverse=True)
+            for related_id in related_sorted[:MAX_RELATED_PER_SEED]:
+                if related_id not in top3_ids:  # seed 本身不重複 boost
+                    boosted_ids.add(related_id)
+        # 給相關日記 TAG_BOOST（但不超過原始 rrf_scores 最高值）
+        max_rrf = max(rrf_scores.values()) if rrf_scores else 1.0
+        for eid in boosted_ids:
+            if eid in rrf_scores:
+                rrf_scores[eid] = min(max_rrf, rrf_scores[eid] + TAG_BOOST)
+
+    # 排序：按 rrf_scores 降序，再用原始 Strategy A score 作 tiebreak
+    id_to_entry = {e["id"]: e for e in entries}
+    candidates = sorted(
+        rrf_scores.items(),
+        key=lambda x: (x[1], scores_a.get(x[0], 0.0)),
+        reverse=True,
+    )
+
+    # ── Layer 3: MMR 多樣性過濾 ──────────────────────────────────────
+    def _similarity(e1: dict, e2: dict) -> float:
+        """
+        簡易相似度：同一天 +0.4，共享 tag 數量加分。
+        這裡不用向量，用結構特徵模擬。
+        """
+        sim = 0.0
+        if e1.get("date") == e2.get("date"):
+            sim += 0.4
+        tags1 = set(e1.get("tags") or [])
+        tags2 = set(e2.get("tags") or [])
+        if tags1 and tags2:
+            overlap = len(tags1 & tags2) / max(len(tags1 | tags2), 1)
+            sim += overlap * 0.6
+        return min(1.0, sim)
+
+    selected: list[tuple[float, dict]] = []
+    for eid, rrf_score in candidates:
+        if len(selected) >= top_k:
+            break
+        entry = id_to_entry.get(eid)
+        if not entry:
+            continue
+
+        if not selected:
+            # 第一篇直接選
+            selected.append((rrf_score, entry))
+            continue
+
+        # MMR: score = λ × relevance - (1-λ) × max_similarity_to_selected
+        max_sim = max(_similarity(entry, sel_e) for _, sel_e in selected)
+        if max_sim >= MMR_SIM_THRESHOLD:
+            # 過於相似，調整分數（不直接丟棄，給降權機會）
+            mmr_score = MMR_LAMBDA * rrf_score - (1 - MMR_LAMBDA) * max_sim
+        else:
+            mmr_score = rrf_score
+
+        selected.append((mmr_score, entry))
+
+    # 最終按分數降序排列
+    selected.sort(key=lambda x: x[0], reverse=True)
 
     if update_meta:
-        for _, e in top:
+        for _, e in selected:
             p = ROOT / e["path"]
             if p.exists():
                 _update_recall_meta_by_path(p)
 
-    return top
+    return selected
 
 
 # ── CLI ──────────────────────────────────────────────────────��────────
@@ -273,6 +423,7 @@ def main():
                 "arousal":           e.get("arousal", 5),
                 "suppressed_emotion": e.get("suppressed_emotion", ""),
                 "flashbulb":         e.get("flashbulb", False),
+                "decay_weight":      e.get("decay_weight", None),  # Phase A
                 "roi":               e.get("roi", []),
                 "preview":           e.get("preview", "")[:300],
                 "path":              e.get("path"),
@@ -282,12 +433,23 @@ def main():
 
     if not results:
         print("🔍 找不到相關日記ですっ…")
-        return
+    else:
+        print(f"\n🔍 召回結果（top {len(results)}）\n")
+        for i, (score, e) in enumerate(results, 1):
+            print(format_result(i, e, score))
+        print("=" * 60)
 
-    print(f"\n🔍 召回結果（top {len(results)}）\n")
-    for i, (score, e) in enumerate(results, 1):
-        print(format_result(i, e, score))
-    print("=" * 60)
+    # Phase III — Pattern Alerts 注入
+    try:
+        from detect_patterns import get_active_alerts, format_alerts_for_recall
+        active = get_active_alerts()
+        if active:
+            alert_text = format_alerts_for_recall(active)
+            print("\n" + "─" * 60)
+            print(alert_text)
+            print("─" * 60)
+    except Exception:
+        pass  # 非致命，静默略過
 
 
 if __name__ == "__main__":

@@ -36,29 +36,39 @@ Inspired by:
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        ai-diary                             │
-│                                                             │
-│  ┌──────────┐    ┌───────────────┐    ┌──────────────────┐ │
-│  │  buffer  │───▶│  consolidate  │───▶│  diary entries   │ │
-│  │  (JSONL) │    │  (intensity   │    │  (Markdown +     │ │
-│  └──────────┘    │   threshold)  │    │   YAML front.)   │ │
-│                  └───────────────┘    └──────────┬───────┘ │
-│                                                  │         │
-│  ┌──────────────────────┐           ┌────────────▼───────┐ │
-│  │  emotion_filter      │           │  ROI index         │ │
-│  │  (character profile) │           │  (keyword pool +   │ │
-│  └──────────────────────┘           │   emotion peaks)   │ │
-│                                     └────────────┬───────┘ │
-│  ┌──────────────────────┐                        │         │
-│  │  recall              │◀───────────────────────┘         │
-│  │  (5-axis scoring)    │                                   │
-│  └──────────────────────┘                                   │
-│                                                             │
-│  ┌──────────────────────┐                                   │
-│  │  summarize           │  (weekly/monthly consolidation)   │
-│  └──────────────────────┘                                   │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                           ai-diary                               │
+│                                                                  │
+│  ┌──────────┐    ┌───────────────┐    ┌──────────────────────┐  │
+│  │  buffer  │───▶│  consolidate  │───▶│  diary entries       │  │
+│  │  (JSONL) │    │  (intensity   │    │  (Markdown + YAML)   │  │
+│  └──────────┘    │   threshold)  │    └──────────┬───────────┘  │
+│                  │               │               │              │
+│                  │  Step 5 ──────┼──▶ decay_weight update       │
+│                  │  Step 6 ──────┼──▶ tag_graph.json            │
+│                  │  Step 7 ──────┼──▶ pattern_alerts.yaml       │
+│                  └───────────────┘               │              │
+│                                                  │              │
+│  ┌──────────────────────┐           ┌────────────▼───────────┐  │
+│  │  emotion_filter      │           │  ROI index             │  │
+│  │  (character profile) │           │  (keyword pool +       │  │
+│  └──────────────────────┘           │   emotion peaks +      │  │
+│                                     │   decay_weight)        │  │
+│  ┌──────────────────────┐           └────────────┬───────────┘  │
+│  │  entity_resolver     │                        │              │
+│  │  (tag normalizer)    │           ┌────────────▼───────────┐  │
+│  └──────────────────────┘           │  tag_graph.json        │  │
+│                                     │  (tag co-occurrence)   │  │
+│  ┌──────────────────────┐           └────────────┬───────────┘  │
+│  │  pattern_alerts      │                        │              │
+│  │  (distress/topic     │           ┌────────────▼───────────┐  │
+│  │   repeat detection)  │──────────▶│  recall                │  │
+│  └──────────────────────┘           │  (RRF + TagGraph + MMR)│  │
+│                                     └────────────────────────┘  │
+│  ┌──────────────────────┐                                        │
+│  │  summarize           │  (weekly/monthly consolidation)        │
+│  └──────────────────────┘                                        │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -90,6 +100,11 @@ score = keyword_hits    × 0.30   # indexed keyword pool match
 All weights configurable in `diary/config/settings.yaml`.  
 **No vector DB required** — recall runs in ~15ms via indexed keyword lookup.
 
+Recall uses a **3-layer fusion** strategy (RRF → Tag Graph boost → MMR diversification):
+1. **RRF** — Reciprocal Rank Fusion merges keyword, ROI, recency, emotional, and valence scores
+2. **Tag Graph** — entries sharing tags with top results get a relevance boost (co-occurrence graph)
+3. **MMR** — Maximal Marginal Relevance penalizes near-duplicate results for diversity
+
 ### 🎭 Character Emotion Filter
 `character_emotion_profile.yaml` defines how your AI character *experiences* emotions differently:
 - Some emotions are amplified (e.g. a loyal character feels trust more intensely)
@@ -104,7 +119,36 @@ This means the same raw event produces different diary entries for different cha
   - `intensity ≤ 3` → discarded
   - `intensity 4–6` → merged into a single entry
   - `intensity ≥ 7` → each gets its own entry
+  - **Step 5** — updates `decay_weight` for all existing entries (time-decay)
+  - **Step 6** — rebuilds `tag_graph.json` (tag co-occurrence index)
+  - **Step 7** — runs `detect_patterns.py` → writes `pattern_alerts.yaml`
 - `summarize.py` — weekly/monthly summaries auto-generated, compressing lower-intensity entries while preserving flashbulb memories
+
+### ⏳ Time Decay (`decay_weight`)
+Every entry has a `decay_weight` that decreases over time using exponential decay:
+```
+decay_weight = max(base_importance × exp(-ln2 × days / halflife), floor)
+```
+- **Flashbulb** — 730-day half-life, floor 0.50 (never forgotten)
+- **High intensity (8–9)** — 90-day half-life, floor 0.15
+- **Medium intensity (6–7)** — 60-day half-life, floor 0.10
+- **Normal** — 30-day half-life, floor 0.05
+
+`decay_weight` feeds directly into the recall score, so older memories naturally surface less — unless recalled repeatedly (each recall activates `+0.10`).
+
+### 🕸 Tag Graph
+`diary/index/tag_graph.json` — a co-occurrence graph where each tag links to entries that share it.  
+During recall, entries sharing tags with top candidates get a relevance boost — surfacing thematically related memories even when keywords don't overlap.
+
+### 🚨 Pattern Detection (`detect_patterns.py`)
+After each consolidation, ai-diary scans recent entries for recurring patterns:
+- **Distress repeat** — `valence ≤ −2` appears ≥ 2 times within 14 days → signals a stuck loop
+- **Topic repeat** — the same tag appears ≥ 3 times within 30 days → signals a persistent theme
+
+Detected patterns are written to `diary/index/pattern_alerts.yaml` and automatically appended to recall output — giving the AI character contextual cues to gently surface recurring themes in conversation.
+
+### 🏷 Entity Resolver
+`entity_resolver.py` normalizes raw tags against `diary/config/entity_ledger.json` using exact match + Levenshtein similarity (threshold 0.80). This ensures tag consistency across entries (e.g. "Nanoleaf Shapes" and "nanoleaf" both become `Nanoleaf`).
 
 ### 🧭 Self-Narrative
 `diary/self-narrative.md` — a living autobiographical document.  
@@ -119,19 +163,25 @@ ai-diary/
 ├── src/
 │   ├── write_diary.py          # Write entries (interactive or CLI)
 │   ├── buffer.py               # Append raw events to buffer
-│   ├── consolidate.py          # Buffer → diary entries (nightly)
-│   ├── recall.py               # 5-axis recall engine
-│   ├── roi.py                  # ROI index builder (keyword + emotion peaks)
+│   ├── consolidate.py          # Buffer → diary entries (nightly, Steps 1-7)
+│   ├── recall.py               # Recall engine (RRF + Tag Graph + MMR)
+│   ├── roi.py                  # ROI index builder (keyword + emotion peaks + decay_weight)
 │   ├── emotion_filter.py       # Character emotion profile filter
-│   └── summarize.py            # Memory consolidation / summaries
+│   ├── summarize.py            # Memory consolidation / summaries
+│   ├── detect_patterns.py      # Pattern detection (distress/topic repeats)
+│   ├── entity_resolver.py      # Tag normalization via entity ledger
+│   └── build_tag_graph.py      # Tag co-occurrence graph builder
 │
 ├── diary/
 │   ├── config/
-│   │   ├── settings.yaml              # Weights, half-lives, thresholds
-│   │   ├── tags.yaml                  # Standard tag vocabulary
+│   │   ├── settings.yaml                    # Weights, half-lives, thresholds
+│   │   ├── tags.yaml                        # Standard tag vocabulary
+│   │   ├── entity_ledger.json               # Canonical entity names for tag normalization
 │   │   └── character_emotion_profile.yaml   # Your character's emotional sensitivities
 │   ├── index/
-│   │   └── roi_index.json             # Auto-generated recall index (gitignored)
+│   │   ├── roi_index.json             # Auto-generated recall index (gitignored)
+│   │   ├── tag_graph.json             # Tag co-occurrence graph (gitignored)
+│   │   └── pattern_alerts.yaml        # Active pattern alerts (gitignored)
 │   ├── YYYY/MM/
 │   │   └── YYYY-MM-DD_HHMM.md         # Daily entries (gitignored — personal)
 │   ├── summaries/
@@ -281,20 +331,38 @@ last_recalled: null
 Before recall runs, `roi.py` builds an index of each entry:
 - **keyword pool** — top-25 significant words extracted from body text
 - **ROI sentences** — 3 emotionally peaked sentences (high arousal + valence weight)
+- **decay_weight** — time-decayed importance score (updated nightly by consolidate.py)
 
 This index is cached in `diary/index/roi_index.json` and rebuilt only when entries change.
 
-### Scoring
+### Scoring (5-Axis)
 
 | Axis | Weight | Description |
 |------|--------|-------------|
 | keyword | 0.30 | Fraction of query terms hitting the entry's keyword pool |
 | roi | 0.20 | Query overlap with ROI sentences × valence alignment bonus |
-| recency | 0.20 | `exp(-ln2 × days / halflife)` — normal: 30d, flashbulb: 730d |
+| decay_weight | 0.20 | Time-decayed importance (replaces raw recency — respects floor by intensity) |
 | emotional | 0.20 | Normalized `emotional_intensity` (÷ 10) |
 | valence_match | 0.10 | Directional match between query valence and entry valence |
 
 All weights are configurable in `diary/config/settings.yaml`.
+
+### 3-Layer Fusion
+
+Scores are fused using **RRF → Tag Graph → MMR**:
+
+1. **RRF (Reciprocal Rank Fusion)** — merges all 5 axis scores into a unified ranking (k=60)
+2. **Tag Graph boost** — entries sharing tags with top-ranked candidates get a relevance bonus (max 3 related entries per seed tag, preventing high-frequency tag floods)
+3. **MMR (Maximal Marginal Relevance)** — final reranking that balances relevance against diversity (λ=0.7), preventing near-duplicate entries from filling all top slots
+
+### Pattern Alerts (appended to recall output)
+
+When `pattern_alerts.yaml` has active alerts, they are appended after recall results:
+```
+[Pattern Alerts — recurring patterns]
+• Distress repeat: 2 low-valence entries within 14 days → gently surface the stuck loop
+• Topic repeat "trust": appeared 3 times in 30 days → a theme worth exploring
+```
 
 ### Performance
 - Cold recall (first run): ~15ms for a 100-entry diary

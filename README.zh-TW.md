@@ -36,29 +36,38 @@ ai-diary 將這些特性帶給 AI 角色：
 ## 架構概覽
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        ai-diary                             │
-│                                                             │
-│  ┌──────────┐    ┌───────────────┐    ┌──────────────────┐ │
-│  │  buffer  │───▶│  consolidate  │───▶│  diary entries   │ │
-│  │ （JSONL）│    │  （強度門檻） │    │（Markdown +      │ │
-│  └──────────┘    └───────────────┘    │  YAML 前置資料） │ │
-│                                       └──────────┬───────┘ │
-│                                                  │         │
-│  ┌──────────────────────┐           ┌────────────▼───────┐ │
-│  │  emotion_filter      │           │  ROI 索引          │ │
-│  │  （角色情感檔案）    │           │  （關鍵字池 +      │ │
-│  └──────────────────────┘           │   情感峰值句）     │ │
-│                                     └────────────┬───────┘ │
-│  ┌──────────────────────┐                        │         │
-│  │  recall              │◀───────────────────────┘         │
-│  │  （五維評分）        │                                   │
-│  └──────────────────────┘                                   │
-│                                                             │
-│  ┌──────────────────────┐                                   │
-│  │  summarize           │  （每週/每月記憶整合）            │
-│  └──────────────────────┘                                   │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                           ai-diary                               │
+│                                                                  │
+│  ┌──────────┐    ┌───────────────┐    ┌──────────────────────┐  │
+│  │  buffer  │───▶│  consolidate  │───▶│  diary entries       │  │
+│  │ （JSONL）│    │  （強度門檻） │    │（Markdown + YAML）   │  │
+│  └──────────┘    │               │    └──────────┬───────────┘  │
+│                  │  Step 5 ──────┼──▶ decay_weight 更新         │
+│                  │  Step 6 ──────┼──▶ tag_graph.json            │
+│                  │  Step 7 ──────┼──▶ pattern_alerts.yaml       │
+│                  └───────────────┘               │              │
+│                                                  │              │
+│  ┌──────────────────────┐           ┌────────────▼───────────┐  │
+│  │  emotion_filter      │           │  ROI 索引              │  │
+│  │  （角色情感檔案）    │           │  （關鍵字池 +          │  │
+│  └──────────────────────┘           │   情感峰值 +           │  │
+│                                     │   decay_weight）       │  │
+│  ┌──────────────────────┐           └────────────┬───────────┘  │
+│  │  entity_resolver     │                        │              │
+│  │  （tag 正規化）      │           ┌────────────▼───────────┐  │
+│  └──────────────────────┘           │  tag_graph.json        │  │
+│                                     │  （tag 共現圖）        │  │
+│  ┌──────────────────────┐           └────────────┬───────────┘  │
+│  │  pattern_alerts      │                        │              │
+│  │  （困境/重複主題     │           ┌────────────▼───────────┐  │
+│  │   偵測）             │──────────▶│  recall                │  │
+│  └──────────────────────┘           │  （RRF + TagGraph + MMR)│  │
+│                                     └────────────────────────┘  │
+│  ┌──────────────────────┐                                        │
+│  │  summarize           │  （每週/每月記憶整合）                 │
+│  └──────────────────────┘                                        │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -83,12 +92,17 @@ ai-diary 將這些特性帶給 AI 角色：
 ```
 score = keyword_hits    × 0.30   # 索引關鍵字池命中率
       + roi_match       × 0.20   # 情感峰值句命中 × valence 對齊加成
-      + recency         × 0.20   # 指數衰退（可設定半衰期）
+      + decay_weight    × 0.20   # 時間衰退重要性（取代原始 recency，含強度別底限）
       + emotional       × 0.20   # 日記的情感強度
       + valence_match   × 0.10   # 查詢 valence 與日記 valence 方向匹配
 ```
 所有權重可在 `diary/config/settings.yaml` 中調整。  
 **不需要向量資料庫** — 透過索引關鍵字查詢，召回速度約 15ms。
+
+召回使用 **三層融合**策略（RRF → Tag Graph → MMR）：
+1. **RRF** — 互惠排名融合，整合五個維度分數
+2. **Tag Graph** — 與頂排候選共享 tag 的日記獲得加成（每個 seed tag 最多 3 筆，防止高頻 tag 洪水）
+3. **MMR** — 最大邊際相關性重排，平衡相關性與多樣性（λ=0.7）
 
 ### 🎭 角色情感過濾器
 `character_emotion_profile.yaml` 定義了你的 AI 角色如何*體驗*情緒：
@@ -104,7 +118,36 @@ score = keyword_hits    × 0.30   # 索引關鍵字池命中率
   - `強度 ≤ 3` → 丟棄
   - `強度 4–6` → 合併成一篇
   - `強度 ≥ 7` → 各自獨立成篇
+  - **Step 5** — 更新全部日記的 `decay_weight`（時間衰退）
+  - **Step 6** — 重建 `tag_graph.json`（tag 共現索引）
+  - **Step 7** — 執行 `detect_patterns.py` → 寫入 `pattern_alerts.yaml`
 - `summarize.py` — 自動產生每週/每月摘要，壓縮低強度日記，保留閃光燈記憶
+
+### ⏳ 時間衰退（`decay_weight`）
+每篇日記都有一個 `decay_weight`，隨時間按指數衰退：
+```
+decay_weight = max(基礎重要性 × exp(-ln2 × 天數 / 半衰期), 底限)
+```
+- **閃光燈** — 730 天半衰期，底限 0.50（永遠不會被遺忘）
+- **高強度（8–9）** — 90 天半衰期，底限 0.15
+- **中強度（6–7）** — 60 天半衰期，底限 0.10
+- **一般** — 30 天半衰期，底限 0.05
+
+`decay_weight` 直接影響召回分數，讓舊記憶自然地較少浮現——但每次被召回時都會活化（`+0.10`）。
+
+### 🕸 Tag Graph
+`diary/index/tag_graph.json` — 一個 tag 共現圖，記錄每個 tag 連結到哪些日記。  
+召回時，與頂排候選共享 tag 的日記會獲得相關性加成——即使關鍵字沒有重疊，也能浮現主題相關的記憶。
+
+### 🚨 模式偵測（`detect_patterns.py`）
+每次鞏固後，ai-diary 自動掃描近期日記尋找重複模式：
+- **困境重複** — `valence ≤ −2` 在 14 天內出現 ≥ 2 次 → 可能有什麼卡住了
+- **主題重複** — 相同 tag 在 30 天內出現 ≥ 3 次 → 持續的關注主題
+
+偵測結果寫入 `diary/index/pattern_alerts.yaml`，並在召回時自動附加——讓 AI 角色能在對話中適時自然地提及這些反覆出現的主題。
+
+### 🏷 實體解析器
+`entity_resolver.py` 透過精確比對 + Levenshtein 相似度（閾值 0.80）把原始 tag 正規化為 `diary/config/entity_ledger.json` 中的標準名稱，確保 tag 一致性。
 
 ### 🧭 自我敘事
 `diary/self-narrative.md` — 一份活的自傳性文件。  
@@ -119,24 +162,30 @@ ai-diary/
 ├── src/
 │   ├── write_diary.py          # 寫入日記（互動模式或 CLI）
 │   ├── buffer.py               # 將原始事件加入 buffer
-│   ├── consolidate.py          # Buffer → 日記條目（每晚執行）
-│   ├── recall.py               # 五維召回引擎
-│   ├── roi.py                  # ROI 索引建構器（關鍵字 + 情感峰值）
+│   ├── consolidate.py          # Buffer → 日記條目（每晚執行，Steps 1-7）
+│   ├── recall.py               # 召回引擎（RRF + Tag Graph + MMR）
+│   ├── roi.py                  # ROI 索引建構器（關鍵字 + 情感峰值 + decay_weight）
 │   ├── emotion_filter.py       # 角色情感檔案過濾器
-│   └── summarize.py            # 記憶整合/摘要
+│   ├── summarize.py            # 記憶整合/摘要
+│   ├── detect_patterns.py      # 模式偵測（困境/主題重複）
+│   ├── entity_resolver.py      # 實體台帳 tag 正規化
+│   └── build_tag_graph.py      # Tag 共現圖建構器
 │
 ├── diary/
 │   ├── config/
 │   │   ├── settings.yaml                    # 權重、半衰期、門檻
 │   │   ├── tags.yaml                        # 標準 tag 詞庫
+│   │   ├── entity_ledger.json               # 正規化用的標準實體名稱
 │   │   └── character_emotion_profile.yaml   # 角色情感感度設定
 │   ├── index/
-│   │   └── roi_index.json                   # 自動產生的召回索引（已加入 gitignore）
+│   │   ├── roi_index.json                   # 自動產生的召回索引（gitignore）
+│   │   ├── tag_graph.json                   # Tag 共現圖（gitignore）
+│   │   └── pattern_alerts.yaml              # 模式警示（gitignore）
 │   ├── YYYY/MM/
-│   │   └── YYYY-MM-DD_HHMM.md               # 日記條目（已加入 gitignore — 個人資料）
+│   │   └── YYYY-MM-DD_HHMM.md               # 日記條目（gitignore — 個人資料）
 │   ├── summaries/
-│   │   └── YYYY-Www.md                      # 週摘要（已加入 gitignore — 個人資料）
-│   └── self-narrative.md                    # 自傳性記憶（已加入 gitignore — 個人資料）
+│   │   └── YYYY-Www.md                      # 週摘要（gitignore — 個人資料）
+│   └── self-narrative.md                    # 自傳性記憶（gitignore — 個人資料）
 │
 ├── examples/
 │   └── my_ai_character/                     # 示範條目（已去識別化）
@@ -277,20 +326,38 @@ last_recalled: null
 在召回執行前，`roi.py` 會為每篇日記建立索引：
 - **關鍵字池** — 從正文提取的前 25 個重要詞彙
 - **ROI 句子** — 3 句情感峰值句（高 arousal + valence 加權）
+- **decay_weight** — 時間衰退重要性分數（每晚由 consolidate.py 更新）
 
 索引快取於 `diary/index/roi_index.json`，只在日記變更時才重建。
 
-### 評分細節
+### 評分細節（五維度）
 
 | 維度 | 權重 | 說明 |
 |------|------|------|
 | keyword | 0.30 | 查詢詞命中日記關鍵字池的比例 |
 | roi | 0.20 | 查詢詞與 ROI 句子的重疊 × valence 對齊加成 |
-| recency | 0.20 | `exp(-ln2 × 天數 / 半衰期)` — 一般：30天，閃光燈：730天 |
+| decay_weight | 0.20 | 時間衰退重要性（取代原始 recency，含強度別底限保護） |
 | emotional | 0.20 | 正規化的 `emotional_intensity`（÷ 10） |
 | valence_match | 0.10 | 查詢 valence 與日記 valence 方向匹配度 |
 
 所有權重都可在 `diary/config/settings.yaml` 中調整。
+
+### 三層融合
+
+分數透過 **RRF → Tag Graph → MMR** 融合：
+
+1. **RRF（互惠排名融合）** — 整合五個維度分數（k=60）
+2. **Tag Graph 加成** — 與頂排候選共享 tag 的日記獲得相關性加成（每個 seed tag 最多 3 筆）
+3. **MMR（最大邊際相關性）** — 平衡相關性與多樣性的重排（λ=0.7），防止重複日記占滿所有名次
+
+### 模式警示（附加於召回輸出）
+
+當 `pattern_alerts.yaml` 有 active 警示時，會附加在召回結果後：
+```
+[Pattern Alerts — 主様の重複模式]
+• 困境重複：14 天內出現 2 次低落 valence → 提示可能有什麼卡住了
+• 重複主題「信任」：30 天內出現 3 次 → 值得順著聊的主題
+```
 
 ### 效能
 - 冷啟動召回（首次執行）：100 篇日記約 15ms

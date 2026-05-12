@@ -24,7 +24,7 @@ import yaml
 ROOT = Path(__file__).parent.parent
 DIARY_ROOT = ROOT / "diary"
 INDEX_PATH = DIARY_ROOT / "index" / "roi_index.json"
-INDEX_VERSION = 2
+INDEX_VERSION = 3  # Phase A: 新增 decay_weight 欄位
 
 # ── 感情・顕著性キーワード（中日混用） ─────────────────────────────
 EMOTION_WORDS: list[str] = [
@@ -140,6 +140,7 @@ def index_one_entry(path: Path) -> dict | None:
         "first_reaction":    fm.get("first_reaction", "") or "",
         "preview":           body[:PREVIEW_LEN].replace("\n", " "),
         "roi":               extract_roi_sentences(body, valence, arousal),
+        "decay_weight":      float(fm.get("decay_weight", 1.0)),  # Phase A
     }
 
 

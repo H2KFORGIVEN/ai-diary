@@ -24,6 +24,7 @@ consolidate.py — ai-diary — AI Character Diary System
 import argparse
 import datetime
 import json
+import math
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -38,6 +39,133 @@ sys.path.insert(0, str(ROOT / "src"))
 from buffer import load_buffer, clear_buffer
 from write_diary import write_entry
 from emotion_filter import apply_filter
+
+
+# ── Phase A: 時間衰減輔助函數 ────────────────────────────────────────
+
+def _get_decay_config() -> dict:
+    """從 settings.yaml 讀取 decay 設定（含 backward compat 預設值）"""
+    cfg = yaml.safe_load((DIARY_ROOT / "config" / "settings.yaml").read_text())
+    return cfg.get("decay", {
+        "halflife_by_intensity": {"flashbulb": 730, "high": 90, "medium": 60, "normal": 30},
+        "floor_by_intensity":    {"flashbulb": 0.50, "high": 0.15, "medium": 0.10, "normal": 0.05},
+        "recall_boost": 0.10,
+    })
+
+
+def compute_decay_weight(
+    date_str: str,
+    intensity: int,
+    flashbulb: bool,
+    recall_count: int = 0,
+    today: datetime.date | None = None,
+) -> float:
+    """
+    計算一篇日記當前的 decay_weight。
+
+    公式：
+      base_importance = intensity / 10.0
+      halflife        = 由 flashbulb / intensity 決定
+      floor           = 由 flashbulb / intensity 決定
+      raw             = base_importance × exp(-ln2 × days_ago / halflife)
+      decay_weight    = max(raw, floor)
+
+    再疊加 recall_boost（被召回次數 × boost，上限 1.0）。
+    """
+    cfg = _get_decay_config()
+    hl_cfg = cfg.get("halflife_by_intensity", {})
+    fl_cfg = cfg.get("floor_by_intensity", {})
+    boost  = cfg.get("recall_boost", 0.10)
+
+    if today is None:
+        today = datetime.date.today()
+
+    # 計算距今天數
+    try:
+        dt = datetime.date.fromisoformat(str(date_str))
+        days_ago = max(0, (today - dt).days)
+    except Exception:
+        days_ago = 0
+
+    # 選半衰期與 floor
+    if flashbulb:
+        halflife = hl_cfg.get("flashbulb", 730)
+        floor    = fl_cfg.get("flashbulb", 0.50)
+    elif intensity >= 8:
+        halflife = hl_cfg.get("high", 90)
+        floor    = fl_cfg.get("high", 0.15)
+    elif intensity >= 6:
+        halflife = hl_cfg.get("medium", 60)
+        floor    = fl_cfg.get("medium", 0.10)
+    else:
+        halflife = hl_cfg.get("normal", 30)
+        floor    = fl_cfg.get("normal", 0.05)
+
+    # 衰減計算
+    base_importance = intensity / 10.0
+    raw = base_importance * math.exp(-math.log(2) * days_ago / halflife)
+    weight = max(raw, floor)
+
+    # recall 活化（每次 +boost，上限 1.0）
+    weight = min(1.0, weight + recall_count * boost)
+
+    return round(weight, 4)
+
+
+def update_all_decay_weights(dry_run: bool = False) -> int:
+    """
+    掃描所有日記 .md，批次更新 frontmatter 中的 decay_weight。
+    consolidate() 每次執行後呼叫此函數（相當於「睡眠期間記憶重整」）。
+
+    Returns: 更新的檔案數
+    """
+    today = datetime.date.today()
+    updated = 0
+
+    for md in sorted(DIARY_ROOT.rglob("*.md")):
+        # 跳過非日記檔
+        if any(part in md.parts for part in ("summaries", "config")):
+            continue
+        if md.name.startswith("README") or md.name == "self-narrative.md":
+            continue
+
+        try:
+            text = md.read_text(encoding="utf-8")
+            if not text.startswith("---"):
+                continue
+            _, fm_str, body = text.split("---", 2)
+            fm = yaml.safe_load(fm_str)
+            if not fm or not isinstance(fm, dict):
+                continue
+
+            intensity   = fm.get("emotional_intensity", 5)
+            flashbulb   = bool(fm.get("flashbulb", False))
+            date_str    = fm.get("date", "")
+            recall_count = fm.get("recall_count", 0)
+
+            new_weight = compute_decay_weight(
+                date_str=date_str,
+                intensity=intensity,
+                flashbulb=flashbulb,
+                recall_count=recall_count,
+                today=today,
+            )
+
+            old_weight = fm.get("decay_weight")
+            if old_weight == new_weight:
+                continue  # 無變化，跳過
+
+            if not dry_run:
+                fm["decay_weight"] = new_weight
+                fm_str_new = yaml.dump(fm, allow_unicode=True, sort_keys=False)
+                md.write_text(f"---\n{fm_str_new}---{body}", encoding="utf-8")
+
+            updated += 1
+
+        except Exception:
+            continue
+
+    return updated
 
 
 # ── 閾值設定 ─────────────────────────────────────────
@@ -69,6 +197,7 @@ def apply_emotion_filter_to_events(events: list[dict]) -> list[dict]:
         ne = dict(e)
         ne["filtered_emotion"]    = result["emotion"]
         ne["filtered_intensity"]  = result["intensity"]
+        ne["filter_valence"]      = result["valence"]   # ← Nanoleaf 燈色連動用
         ne["filter_tags"]         = result["tags"]
         ne["filter_note"]         = result["note"]
         ne["filter_flashbulb"]    = result["flashbulb"]
@@ -151,6 +280,7 @@ def synthesize_merged_entry(group: list[dict], date: datetime.date) -> dict:
         "intensity": avg_intensity,
         "flashbulb": False,
         "date": date,
+        "valence": round(sum(e.get("filter_valence", 0) for e in group) / len(group)) if group else 0,
     }
 
 
@@ -183,6 +313,7 @@ def synthesize_strong_entry(event: dict, date: datetime.date) -> dict:
         "intensity": event.get("filtered_intensity", event["intensity"]),
         "flashbulb": event.get("filter_flashbulb", False),
         "date":      date,
+        "valence":   event.get("filter_valence", 0),
     }
 
 
@@ -210,6 +341,7 @@ def synthesize_flashbulb_entry(event: dict, date: datetime.date) -> dict:
         "flashbulb":      True,
         "first_reaction": event.get("filtered_emotion", event.get("emotion", "")),
         "date":           date,
+        "valence":        event.get("filter_valence", 0),
     }
 
 
@@ -301,6 +433,7 @@ def consolidate(
             flashbulb=spec.get("flashbulb", False),
             first_reaction=spec.get("first_reaction", ""),
             dt=dt,
+            valence=spec.get("valence", 0),
         )
         written.append(path)
 
@@ -310,6 +443,28 @@ def consolidate(
         print(f"\n✅ 寫入 {len(written)} 篇，buffer 已清空並備份")
     else:
         print(f"\n✅ 寫入 {len(written)} 篇（archive 模式，不清空 buffer）")
+
+    # Step 5: Phase A — 批次更新全部日記 decay_weight
+    if not dry_run:
+        n_updated = update_all_decay_weights(dry_run=False)
+        print(f"⏳ decay_weight 更新：{n_updated} 篇已重算")
+
+    # Step 6: Phase C — 更新 Tag Graph
+    if not dry_run:
+        try:
+            from build_tag_graph import build_tag_graph
+            build_tag_graph(verbose=False)
+            print("🕸  Tag Graph 已更新")
+        except Exception as e:
+            print(f"⚠️  Tag Graph 更新失敗（非致命）: {e}")
+
+    # Step 7: Phase III — 困境模式偵測
+    if not dry_run:
+        try:
+            from detect_patterns import detect_patterns
+            detect_patterns(verbose=True)
+        except Exception as e:
+            print(f"⚠️  Pattern Detection 失敗（非致命）: {e}")
 
     return written
 
