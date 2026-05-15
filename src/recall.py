@@ -183,7 +183,8 @@ def filter_by_tag(entries: list[dict], tag: str) -> list[dict]:
 
 # ── 結果フォーマット ──────────────────────────────────────────────────
 
-def format_result(rank: int, entry: dict, score: float) -> str:
+def format_result(rank: int, entry: dict, score: float,
+                  scenario_label: str = "") -> str:
     tags      = ", ".join(entry.get("tags") or [])
     intensity = entry.get("intensity", "?")
     valence   = entry.get("valence", None)
@@ -206,6 +207,9 @@ def format_result(rank: int, entry: dict, score: float) -> str:
         f"📔 {entry.get('title', '（無標題）')}",
         f"🏷  {tags}  |  強度: {intensity}/10{va_str}",
     ]
+    # Strategy D: Scenario ラベル
+    if scenario_label:
+        lines.insert(3, f"🗂  Scenario: {scenario_label[:60]}")
     # Phase A: decay_weight 顯示
     dw = entry.get("decay_weight")
     if dw is not None:
@@ -229,7 +233,7 @@ def format_result(rank: int, entry: dict, score: float) -> str:
 # ── メイン recall ─────────────────────────────────────────────────────
 
 def run_recall(query: str, top_k: int, tag_filter: str | None,
-               update_meta: bool, query_valence: int = 0) -> list[tuple[float, dict]]:
+               update_meta: bool, query_valence: int = 0) -> list[tuple[float, dict, str]]:
     """
     Phase C 升級版三層 recall。
 
@@ -242,9 +246,15 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
     Layer 2 — Tag Graph 擴散：
       被 Strategy A 召回的前 3 篇，找出其 tag 相關日記，給予 TAG_BOOST
 
+    Layer 2.5 — Scenario Boost（Strategy D）：
+      L2 Scenario index に query が hit したシナリオのメンバーを SCENARIO_BOOST
+      drill_down=True なら seed entry を強制注入
+
     Layer 3 — MMR 多樣性過濾：
       Maximum Marginal Relevance，避免結果全是同一天的記憶
       λ=0.7（相關性 vs 多樣性的平衡）
+
+    戻り値：(score, entry_dict, scenario_label_or_empty_str) のリスト
     """
     RRF_K = 60
     TAG_BOOST = 0.05
@@ -323,6 +333,83 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
             if eid in rrf_scores:
                 rrf_scores[eid] = min(max_rrf, rrf_scores[eid] + TAG_BOOST)
 
+    # ── Layer 2.5: Scenario Boost（Strategy D）─────────────────────
+    # L2 Scenario index が存在し、query がある場合のみ発動。
+    # ヒットしたシナリオのメンバー全員に SCENARIO_BOOST を付与。
+    # drill_down=True の場合、seed entry を強制的に候補に押し込む。
+    SCENARIO_BOOST = 0.08
+    _scn_idx = ROOT / "diary" / "index" / "scenario_index.json"
+    _scn_cfg  = CONFIG.get("scenario", {}).get("recall", {})
+    # entry_to_scenario: entry_id → scenario_title（format 表示用）
+    entry_to_scenario: dict[str, str] = {}
+
+    if query_words and _scn_idx.exists() and _scn_cfg.get("enabled", True):
+        with open(_scn_idx, encoding="utf-8") as _f:
+            _scn_data = json.load(_f)
+        _scenarios = _scn_data.get("scenarios", [])
+        _max_rrf   = max(rrf_scores.values()) if rrf_scores else 1.0
+        _valid_ids = {e["id"] for e in entries}  # drill-down 安全チェック用
+
+        for scn in _scenarios:
+            # シナリオ関連度：tags ＋ keywords へのクエリヒット数
+            scn_pool = set(w.lower() for w in
+                           (scn.get("tags") or []) + (scn.get("keywords") or []))
+            hits = sum(1 for w in query_words if w.lower() in scn_pool)
+            if hits == 0:
+                continue
+
+            scn_title = scn.get("title", scn.get("scenario_id", ""))
+
+            # メンバー全員に SCENARIO_BOOST（上限: _max_rrf）
+            for mid in scn.get("member_ids", []):
+                if mid in rrf_scores:
+                    rrf_scores[mid] = min(_max_rrf, rrf_scores[mid] + SCENARIO_BOOST)
+                entry_to_scenario[mid] = scn_title  # 表示ラベル登録
+
+            # Drill-down: seed entry を rrf_scores に押し込む
+            if _scn_cfg.get("drill_down", True):
+                drill_top = _scn_cfg.get("drill_down_top", 2)
+                for seed_id in (scn.get("seed_ids") or [])[:drill_top]:
+                    if seed_id not in rrf_scores and seed_id in _valid_ids:
+                        # intensity に比例した基底スコアで注入
+                        _inten = (scn.get("emotional_intensity", 5) - 1) / 9.0
+                        rrf_scores[seed_id] = SCENARIO_BOOST * _inten
+                        entry_to_scenario[seed_id] = scn_title
+
+    # ── Layer 2.7: Vector KNN Boost（Strategy E）────────────────────
+    # embeddings.npy が存在する場合のみ発動（任意の Phase 2 機能）。
+    # vec_search.py を /usr/local/bin/python3（torch あり）で subprocess 呼び出し。
+    # hermes の python3.11 には torch がないため subprocess 分離が必要。
+    VEC_BOOST   = 0.06
+    VEC_TOP_K   = 5
+    _vec_path   = ROOT / "diary" / "index" / "embeddings.npy"
+    _vec_script = ROOT / "src" / "vec_search.py"
+    _vec_python = "/usr/local/bin/python3"
+
+    if query_words and _vec_path.exists() and _vec_script.exists():
+        try:
+            import subprocess, json as _json
+            _query_str = " ".join(query_words)
+            _proc = subprocess.run(
+                [_vec_python, str(_vec_script), _query_str, str(VEC_TOP_K)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if _proc.returncode == 0 and _proc.stdout.strip():
+                _vec_results = _json.loads(_proc.stdout.strip())
+                for _vscore, _veid, _vtitle in _vec_results:
+                    if _vscore < 0.30:          # 低信頼度はスキップ
+                        continue
+                    if str(_veid).startswith("scn-"):  # scenario は除外
+                        continue
+                    _vboost = VEC_BOOST * _vscore   # score に比例した boost
+                    if _veid in rrf_scores:
+                        rrf_scores[_veid] += _vboost
+                    else:
+                        # RRF にない場合は drill-in
+                        rrf_scores[_veid] = _vboost
+        except Exception:
+            pass  # 非致命、インデックスなしや embedder 未インストールでも動く
+
     # 排序：按 rrf_scores 降序，再用原始 Strategy A score 作 tiebreak
     id_to_entry = {e["id"]: e for e in entries}
     candidates = sorted(
@@ -347,7 +434,7 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
             sim += overlap * 0.6
         return min(1.0, sim)
 
-    selected: list[tuple[float, dict]] = []
+    selected: list[tuple[float, dict, str]] = []
     for eid, rrf_score in candidates:
         if len(selected) >= top_k:
             break
@@ -355,26 +442,28 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
         if not entry:
             continue
 
+        scn_label = entry_to_scenario.get(eid, "")
+
         if not selected:
             # 第一篇直接選
-            selected.append((rrf_score, entry))
+            selected.append((rrf_score, entry, scn_label))
             continue
 
         # MMR: score = λ × relevance - (1-λ) × max_similarity_to_selected
-        max_sim = max(_similarity(entry, sel_e) for _, sel_e in selected)
+        max_sim = max(_similarity(entry, sel_e) for _, sel_e, _ in selected)
         if max_sim >= MMR_SIM_THRESHOLD:
             # 過於相似，調整分數（不直接丟棄，給降權機會）
             mmr_score = MMR_LAMBDA * rrf_score - (1 - MMR_LAMBDA) * max_sim
         else:
             mmr_score = rrf_score
 
-        selected.append((mmr_score, entry))
+        selected.append((mmr_score, entry, scn_label))
 
     # 最終按分數降序排列
     selected.sort(key=lambda x: x[0], reverse=True)
 
     if update_meta:
-        for _, e in selected:
+        for _, e, _ in selected:
             p = ROOT / e["path"]
             if p.exists():
                 _update_recall_meta_by_path(p)
@@ -412,7 +501,7 @@ def main():
 
     if args.json:
         output = []
-        for score, e in results:
+        for score, e, scn_label in results:
             output.append({
                 "score":             round(score, 4),
                 "date":              e.get("date"),
@@ -427,6 +516,7 @@ def main():
                 "roi":               e.get("roi", []),
                 "preview":           e.get("preview", "")[:300],
                 "path":              e.get("path"),
+                "scenario":          scn_label,  # Strategy D
             })
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return
@@ -435,8 +525,8 @@ def main():
         print("🔍 找不到相關日記ですっ…")
     else:
         print(f"\n🔍 召回結果（top {len(results)}）\n")
-        for i, (score, e) in enumerate(results, 1):
-            print(format_result(i, e, score))
+        for i, (score, e, scn_label) in enumerate(results, 1):
+            print(format_result(i, e, score, scenario_label=scn_label))
         print("=" * 60)
 
     # Phase III — Pattern Alerts 注入

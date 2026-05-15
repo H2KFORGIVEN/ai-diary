@@ -458,6 +458,24 @@ def consolidate(
         except Exception as e:
             print(f"⚠️  Tag Graph 更新失敗（非致命）: {e}")
 
+    # Step 6.5: Phase 1 — L2 Scenario 自動更新（Tag Graph 更新後）
+    if not dry_run:
+        try:
+            import yaml as _yaml
+            from scenarize import scenarize
+            _scn_settings = _yaml.safe_load(
+                (DIARY_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")
+            )
+            _scn_cfg = _scn_settings.get("scenario", {})
+            if _scn_cfg.get("enabled", True):
+                _window = _scn_cfg.get("window_days", 30)
+                _new_scns = scenarize(window_days=_window, rebuild=False, dry_run=False)
+                print(f"🗂  Scenario 已更新：{len(_new_scns)} 個")
+            else:
+                print("🗂  Scenario 更新已跳過（scenario.enabled=false）")
+        except Exception as e:
+            print(f"⚠️  Scenario 更新失敗（非致命）: {e}")
+
     # Step 7: Phase III — 困境模式偵測
     if not dry_run:
         try:
@@ -465,6 +483,27 @@ def consolidate(
             detect_patterns(verbose=True)
         except Exception as e:
             print(f"⚠️  Pattern Detection 失敗（非致命）: {e}")
+
+    # Step 8: Vector Index 更新（build_vec_index.py を /usr/local/bin/python3 で実行）
+    if not dry_run:
+        try:
+            import subprocess as _sp
+            _vec_script = ROOT / "src" / "build_vec_index.py"
+            _vec_python = "/usr/local/bin/python3"
+            if _vec_script.exists():
+                _result = _sp.run(
+                    [_vec_python, str(_vec_script)],
+                    capture_output=True, text=True, timeout=60,
+                    cwd=str(ROOT),
+                )
+                if _result.returncode == 0:
+                    # 最後の行だけ表示（要約行）
+                    _last = [l for l in _result.stdout.splitlines() if l.strip()]
+                    print(f"🔢  Vector Index: {_last[-1] if _last else 'ok'}")
+                else:
+                    print(f"⚠️  Vector Index 更新失敗: {_result.stderr[:100]}")
+        except Exception as e:
+            print(f"⚠️  Vector Index 更新失敗（非致命）: {e}")
 
     return written
 
