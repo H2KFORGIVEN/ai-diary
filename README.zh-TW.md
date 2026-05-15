@@ -2,7 +2,8 @@
 
 **專為 AI 角色設計的情感優先記憶系統。**
 
-不需要向量資料庫。不需要複雜的基礎設施。只要 Markdown 檔案、認知科學，還有一點點靈魂。
+不需要向量資料庫。不需要複雜的基礎設施。只要 Markdown 檔案、認知科學，還有一點點靈魂。  
+選用功能：透過本地多語言 embedding 模型進行語意向量搜尋。
 
 [English](README.md) | 繁體中文 | [日本語](README.ja.md)
 
@@ -46,6 +47,7 @@ ai-diary 將這些特性帶給 AI 角色：
 │                  │  Step 5 ──────┼──▶ decay_weight 更新         │
 │                  │  Step 6 ──────┼──▶ tag_graph.json            │
 │                  │  Step 7 ──────┼──▶ pattern_alerts.yaml       │
+│                  │  Step 8 ──────┼──▶ embeddings.npy（選用）    │
 │                  └───────────────┘               │              │
 │                                                  │              │
 │  ┌──────────────────────┐           ┌────────────▼───────────┐  │
@@ -62,8 +64,14 @@ ai-diary 將這些特性帶給 AI 角色：
 │  │  pattern_alerts      │                        │              │
 │  │  （困境/重複主題     │           ┌────────────▼───────────┐  │
 │  │   偵測）             │──────────▶│  recall                │  │
-│  └──────────────────────┘           │  （RRF + TagGraph + MMR)│  │
-│                                     └────────────────────────┘  │
+│  └──────────────────────┘           │  （RRF + TagGraph +    │  │
+│                                     │   Scenario + Vec + MMR)│  │
+│  ┌──────────────────────┐           └────────────────────────┘  │
+│  │  scenarize（選用）   │  （IDF-Jaccard 場景聚類）              │
+│  └──────────────────────┘                                        │
+│  ┌──────────────────────┐                                        │
+│  │  vec_index（選用）   │  （multilingual-e5-small KNN，本地）   │
+│  └──────────────────────┘                                        │
 │  ┌──────────────────────┐                                        │
 │  │  summarize           │  （每週/每月記憶整合）                 │
 │  └──────────────────────┘                                        │
@@ -97,12 +105,14 @@ score = keyword_hits    × 0.30   # 索引關鍵字池命中率
       + valence_match   × 0.10   # 查詢 valence 與日記 valence 方向匹配
 ```
 所有權重可在 `diary/config/settings.yaml` 中調整。  
-**不需要向量資料庫** — 透過索引關鍵字查詢，召回速度約 15ms。
+**核心召回速度約 15ms** — 透過索引關鍵字查詢，不需要向量資料庫。
 
-召回使用 **三層融合**策略（RRF → Tag Graph → MMR）：
+召回使用 **五層融合**策略：
 1. **RRF** — 互惠排名融合，整合五個維度分數
 2. **Tag Graph** — 與頂排候選共享 tag 的日記獲得加成（每個 seed tag 最多 3 筆，防止高頻 tag 洪水）
-3. **MMR** — 最大邊際相關性重排，平衡相關性與多樣性（λ=0.7）
+3. **Scenario 加成**（選用）— 與頂排候選屬於同一敘事場景的日記，根據場景情感強度獲得額外加成（Layer 2.5）
+4. **向量 KNN 加成**（選用）— `multilingual-e5-small` 找出語意最相近的日記並給予加成，捕捉關鍵字搜尋遺漏的同義詞（Layer 2.7）
+5. **MMR** — 最大邊際相關性重排，平衡相關性與多樣性（λ=0.7）
 
 ### 🎭 角色情感過濾器
 `character_emotion_profile.yaml` 定義了你的 AI 角色如何*體驗*情緒：
@@ -121,6 +131,7 @@ score = keyword_hits    × 0.30   # 索引關鍵字池命中率
   - **Step 5** — 更新全部日記的 `decay_weight`（時間衰退）
   - **Step 6** — 重建 `tag_graph.json`（tag 共現索引）
   - **Step 7** — 執行 `detect_patterns.py` → 寫入 `pattern_alerts.yaml`
+  - **Step 8**（選用）— 透過 `build_vec_index.py` 重建 `embeddings.npy` 向量索引
 - `summarize.py` — 自動產生每週/每月摘要，壓縮低強度日記，保留閃光燈記憶
 
 ### ⏳ 時間衰退（`decay_weight`）
@@ -138,6 +149,21 @@ decay_weight = max(基礎重要性 × exp(-ln2 × 天數 / 半衰期), 底限)
 ### 🕸 Tag Graph
 `diary/index/tag_graph.json` — 一個 tag 共現圖，記錄每個 tag 連結到哪些日記。  
 召回時，與頂排候選共享 tag 的日記會獲得相關性加成——即使關鍵字沒有重疊，也能浮現主題相關的記憶。
+
+### 🔵 場景聚類（選用）
+`scenarize.py` 使用 IDF 加權 Jaccard 相似度與 union-find 演算法，將相關日記分組成敘事場景：
+- 當場景中任何一篇日記浮現於頂排結果時，同場景的其他日記也會獲得相關性加成（Layer 2.5）
+- 場景在每次鞏固時自動重建（Step 6.5）
+- 稀有共現關鍵字驅動聚類（高 IDF 詞彙比常見詞彙更重要）
+
+### 🔢 向量語意搜尋（選用）
+`embedder.py` + `vec_index.py` + `build_vec_index.py` 在關鍵字引擎之上加入語意搜尋：
+- 模型：`intfloat/multilingual-e5-small`（384 維，~120MB，**完全本地離線**）
+- 硬體：Mac MPS 加速，CPU 備援
+- 常駐記憶體 numpy KNN — 矩陣乘法 < 1ms（模型載入後）
+- 冷啟動約 3 秒（模型載入），之後查詢近乎即時
+- 語意相似日記加成召回分數（Layer 2.7），捕捉關鍵字遺漏的同義詞
+- Subprocess 隔離：`vec_search.py` 透過有 `torch` 的 Python 環境呼叫
 
 ### 🚨 模式偵測（`detect_patterns.py`）
 每次鞏固後，ai-diary 自動掃描近期日記尋找重複模式：
@@ -162,14 +188,19 @@ ai-diary/
 ├── src/
 │   ├── write_diary.py          # 寫入日記（互動模式或 CLI）
 │   ├── buffer.py               # 將原始事件加入 buffer
-│   ├── consolidate.py          # Buffer → 日記條目（每晚執行，Steps 1-7）
-│   ├── recall.py               # 召回引擎（RRF + Tag Graph + MMR）
+│   ├── consolidate.py          # Buffer → 日記條目（每晚執行，Steps 1-8）
+│   ├── recall.py               # 召回引擎（RRF + Tag Graph + Scenario + Vec + MMR）
 │   ├── roi.py                  # ROI 索引建構器（關鍵字 + 情感峰值 + decay_weight）
 │   ├── emotion_filter.py       # 角色情感檔案過濾器
 │   ├── summarize.py            # 記憶整合/摘要
 │   ├── detect_patterns.py      # 模式偵測（困境/主題重複）
 │   ├── entity_resolver.py      # 實體台帳 tag 正規化
-│   └── build_tag_graph.py      # Tag 共現圖建構器
+│   ├── build_tag_graph.py      # Tag 共現圖建構器
+│   ├── scenarize.py            # 場景聚類（IDF-Jaccard + union-find）【選用】
+│   ├── embedder.py             # 文字嵌入引擎（multilingual-e5-small）【選用】
+│   ├── vec_index.py            # 常駐記憶體 numpy KNN 索引【選用】
+│   ├── vec_search.py           # Subprocess 輔助工具（Python 環境隔離）【選用】
+│   └── build_vec_index.py      # 增量向量索引建構器【選用】
 │
 ├── diary/
 │   ├── config/
@@ -180,12 +211,21 @@ ai-diary/
 │   ├── index/
 │   │   ├── roi_index.json                   # 自動產生的召回索引（gitignore）
 │   │   ├── tag_graph.json                   # Tag 共現圖（gitignore）
-│   │   └── pattern_alerts.yaml              # 模式警示（gitignore）
+│   │   ├── pattern_alerts.yaml              # 模式警示（gitignore）
+│   │   ├── scenario_index.json              # 場景聚類索引（gitignore）【選用】
+│   │   ├── embeddings.npy                   # 向量索引（gitignore）【選用】
+│   │   └── embedding_meta.json              # 向量中繼資料（gitignore）【選用】
 │   ├── YYYY/MM/
 │   │   └── YYYY-MM-DD_HHMM.md               # 日記條目（gitignore — 個人資料）
 │   ├── summaries/
 │   │   └── YYYY-Www.md                      # 週摘要（gitignore — 個人資料）
 │   └── self-narrative.md                    # 自傳性記憶（gitignore — 個人資料）
+│
+├── models/
+│   └── e5-small/                            # 本地模型快取（gitignore）【選用】
+│
+├── tests/
+│   └── test_recall.py                       # 測試套件（25 個測試）
 │
 ├── examples/
 │   └── my_ai_character/                     # 示範條目（已去識別化）
@@ -206,10 +246,14 @@ ai-diary/
 ```bash
 git clone https://github.com/H2KFORGIVEN/ai-diary
 cd ai-diary
-pip install pyyaml
-```
 
-沒有其他依賴。
+# 核心功能（不需要向量——只裝這個就夠）
+pip install pyyaml
+
+# 選用：語意向量搜尋（+~120MB 本地模型）
+pip install sentence-transformers torch
+python src/build_vec_index.py --rebuild   # 第一次建立索引
+```
 
 ### 2. 設定你的角色
 
@@ -342,27 +386,29 @@ last_recalled: null
 
 所有權重都可在 `diary/config/settings.yaml` 中調整。
 
-### 三層融合
+### 五層融合
 
-分數透過 **RRF → Tag Graph → MMR** 融合：
+分數透過 **RRF → Tag Graph → Scenario → Vec KNN → MMR** 融合：
 
 1. **RRF（互惠排名融合）** — 整合五個維度分數（k=60）
 2. **Tag Graph 加成** — 與頂排候選共享 tag 的日記獲得相關性加成（每個 seed tag 最多 3 筆）
-3. **MMR（最大邊際相關性）** — 平衡相關性與多樣性的重排（λ=0.7），防止重複日記占滿所有名次
+3. **Scenario 加成**（選用）— 與頂排候選屬於同一敘事場景的日記，根據場景情感強度獲得加成（Layer 2.5）
+4. **向量 KNN 加成**（選用）— `multilingual-e5-small` 找出語意最相近日記；cosine 相似度 ≥ 0.30 的才會被加成（Layer 2.7）
+5. **MMR（最大邊際相關性）** — 平衡相關性與多樣性的重排（λ=0.7），防止重複日記占滿所有名次
 
 ### 模式警示（附加於召回輸出）
 
 當 `pattern_alerts.yaml` 有 active 警示時，會附加在召回結果後：
 ```
-[Pattern Alerts — 主様の重複模式]
+[Pattern Alerts — 重複模式偵測]
 • 困境重複：14 天內出現 2 次低落 valence → 提示可能有什麼卡住了
 • 重複主題「信任」：30 天內出現 3 次 → 值得順著聊的主題
 ```
 
 ### 效能
-- 冷啟動召回（首次執行）：100 篇日記約 15ms
-- 熱啟動召回（快取索引）：約 0.3ms
-- 純 Python + PyYAML — 不需向量資料庫，不需 embedding 模型
+- 核心召回（不含向量）：冷啟動 ~15ms，熱啟動 ~0.3ms — 純 Python + PyYAML
+- 啟用向量加成：首次呼叫約 3 秒（模型冷啟動），之後近乎即時
+- 向量索引建置：每 16 筆約 3 秒（Mac MPS，一次性，之後增量更新）
 
 ---
 
@@ -405,21 +451,22 @@ context = "\n\n".join([
 
 ---
 
-## 為什麼不用向量資料庫？
+## 向量是選用的，不是必需的
 
 向量資料庫很強大——但需要基礎設施、維護成本，且不透明。  
-ai-diary 刻意選擇 **grep + 數學**：
+ai-diary 的**核心**刻意選擇 **grep + 數學**：
 
-| | ai-diary | 向量資料庫 |
-|---|---|---|
-| 依賴 | 只需 PyYAML | chromadb / pinecone / pgvector + 模型 |
-| 召回速度 | ~15ms（冷）、~0.3ms（熱） | ~50–200ms |
-| 可解釋性 | 可直接閱讀 AI 記住的內容 | 不透明的相似度分數 |
-| 可移植性 | 任何 Python 環境 | 需要伺服器/服務 |
-| 儲存格式 | 純 Markdown | 二進位 embedding |
-| 情感加權 | 原生支援（schema 欄位） | 需要 metadata 過濾器 |
+|  | ai-diary（核心） | ai-diary + vec | 向量資料庫 |
+|---|---|---|---|
+| 依賴 | 只需 PyYAML | + sentence-transformers + torch | chromadb / pinecone / pgvector + 模型 |
+| 召回速度 | ~15ms 冷、~0.3ms 熱 | ~3s 冷啟動、~1ms 熱 | ~50–200ms |
+| 可解釋性 | 可直接閱讀 AI 記住的內容 | 可直接閱讀 AI 記住的內容 | 不透明的相似度分數 |
+| 可移植性 | 任何 Python 環境 | 需要有 torch 的 Python | 需要伺服器/服務 |
+| 儲存格式 | 純 Markdown | + 每 16 筆約 24KB .npy | 二進位 embedding |
+| 情感加權 | 原生支援（schema 欄位） | 原生支援（schema 欄位） | 需要 metadata 過濾器 |
+| 語意同義詞 | ✗ | ✓（e5-small 加成） | ✓ |
 
-取捨：關鍵字召回無法捕捉向量搜尋能找到的語意同義詞。對 AI 日記的使用場景來說，這通常沒問題——你用自己的語言查詢自己的記憶。
+核心取捨：關鍵字召回無法捕捉向量搜尋能找到的語意同義詞。對 AI 日記的使用場景來說，這通常沒問題——你用自己的語言查詢自己的記憶。需要語意搜尋時，啟用選用的向量層即可。
 
 ---
 
@@ -437,6 +484,9 @@ ai-diary 刻意選擇 **grep + 數學**：
 ### 為什麼要有閃光燈記憶？
 Brown & Kulik（1977）發現，情感強烈、令人驚訝的事件會以異常清晰和持久的方式被記住。沒有這個機制，AI 記憶系統會把「用戶說了深刻的話的那一天」和「週二的除錯工作」同等對待。
 
+### 為什麼向量用 subprocess 隔離？
+`vec_search.py` 透過 subprocess 呼叫而非直接 import。這讓 `torch`/`sentence-transformers` 依賴與核心召回執行時期完全分離——核心系統在任何 Python 環境下都能運作，向量層則使用有安裝 `torch` 的獨立 Python 環境。
+
 ---
 
 ## 貢獻方式
@@ -444,10 +494,10 @@ Brown & Kulik（1977）發現，情感強烈、令人驚訝的事件會以異常
 歡迎 PR！以下幾個方向特別需要貢獻：
 
 - **多語言支援** — 目前的 tag 詞庫和情感標籤混合了日文和繁體中文（這對原始角色是刻意的，但一套完整的 i18n 系統會很有幫助）
-- **語意關鍵字提取** — 目前的關鍵字提取基於詞頻；輕量級語意提取器（不需要大型模型）能提升召回品質
 - **更多召回維度** — 想法：社交情境加權、一天中的時段模式、對話脈絡連續性
 - **整合範例** — 展示如何接入特定 agent 框架（LangChain、AgentSys、自製框架等）
 - **替代鞏固策略** — 目前的合併/獨立/丟棄門檻只是一種方案；不同使用情境可能適合不同策略
+- **向量常駐 Daemon** — 讓 embedding 模型保持熱態，消除 3 秒冷啟動
 
 請保持 PR 聚焦，並與純 Markdown 日記格式向後相容。
 
