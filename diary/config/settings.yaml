@@ -46,3 +46,31 @@ decay:
     medium:      0.10          # intensity 6-7 永不低於 0.10
     normal:      0.05          # 一般永不低於 0.05
   recall_boost:  0.10          # 每次被 recall 時 decay_weight 活化 +0.10
+
+# ── L2 Scenario 設定（Phase 1）────────────────────────────
+scenario:
+  enabled: true
+  window_days: 30                  # 增量掃描窗（日）
+  min_members: 2
+  max_members: 12
+  # C1: IDF-weighted Jaccard 閾值
+  # ⚠️ 語料 N≦30 階段數值偏低，50 篇以上建議升至 0.30
+  idf_jaccard_threshold: 0.20
+  # C1b fallback: 稀少 tag 共有（IDF 高 tag 1 個 + 近時間）
+  rare_tag_idf_threshold: 2.0     # 這個 IDF 以上視為「稀少」
+  rare_shared_sum_min: 2.0        # 稀少 tag IDF 合計 >= 這個值 → fallback 連接
+  rare_shared_window_days: 7      # fallback 適用最大時間差（日）
+  # C2: 時間窗
+  time_span_days: 14
+  flashbulb_radius_days: 30
+  # C4: 情緒承載門檻
+  min_max_intensity: 6
+  min_mean_intensity: 5.0
+  # 增量模式：既有 scenario 不移除 member
+  monotonic_growth: true
+  # recall.py Strategy D 設定
+  recall:
+    enabled: true
+    weight: 0.35                   # RRF 相對權重（未接線：recall.py 實際用寫死的 SCENARIO_BOOST=0.08，待後續統一）
+    drill_down: true
+    drill_down_top: 2

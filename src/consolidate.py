@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from buffer import load_buffer, clear_buffer
 from write_diary import write_entry
 from emotion_filter import apply_filter
+from roi import is_diary_entry
 
 
 # ── Phase A: 時間衰減輔助函數 ────────────────────────────────────────
@@ -124,9 +125,7 @@ def update_all_decay_weights(dry_run: bool = False) -> int:
 
     for md in sorted(DIARY_ROOT.rglob("*.md")):
         # 跳過非日記檔
-        if any(part in md.parts for part in ("summaries", "config")):
-            continue
-        if md.name.startswith("README") or md.name == "self-narrative.md":
+        if not is_diary_entry(md):
             continue
 
         try:
@@ -217,7 +216,10 @@ def group_medium(events: list[dict]) -> list[list[dict]]:
     強度 4-6 的事件：依 tags 相似度分群聚合。
     簡單策略：找最常見的 shared tag 做分桶。
     """
-    medium = [e for e in events if DISCARD_THRESHOLD < e["intensity"] <= MERGE_THRESHOLD]
+    medium = [
+        e for e in events
+        if DISCARD_THRESHOLD < e.get("filtered_intensity", e["intensity"]) <= MERGE_THRESHOLD
+    ]
     if not medium:
         return []
 
@@ -389,9 +391,11 @@ def consolidate(
     print(f"   丟棄 {len(dropped)} 個低強度雜訊（intensity ≤ {DISCARD_THRESHOLD}）")
 
     # Step 2: 分類（使用 filtered_intensity；filter_flashbulb=True も flashbulb 扱い）
-    strong    = [e for e in keep if 7 <= e.get("filtered_intensity", e["intensity"]) < 10
+    # flashbulb 門檻：intensity >= 8（主様決定：「うちが記憶したい時刻は全部永駐」）
+    FLASHBULB_THRESHOLD = 8
+    strong    = [e for e in keep if 7 <= e.get("filtered_intensity", e["intensity"]) < FLASHBULB_THRESHOLD
                  and not e.get("filter_flashbulb", False)]
-    flashbulb = [e for e in keep if e.get("filtered_intensity", e["intensity"]) >= 10
+    flashbulb = [e for e in keep if e.get("filtered_intensity", e["intensity"]) >= FLASHBULB_THRESHOLD
                  or e.get("filter_flashbulb", False)]
     medium    = [e for e in keep if DISCARD_THRESHOLD < e.get("filtered_intensity", e["intensity"]) <= MERGE_THRESHOLD
                  and not e.get("filter_flashbulb", False)]

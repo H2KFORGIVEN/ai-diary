@@ -43,7 +43,7 @@ HALFLIFE_FLASHBULB = CONFIG["flashbulb"]["recency_halflife_days"]   # 730日
 # roi.py から load
 import sys
 sys.path.insert(0, str(ROOT / "src"))
-from roi import load_index, update_index_entry
+from roi import load_index
 from entity_resolver import expand as entity_expand  # Phase B
 from build_tag_graph import load_tag_graph, get_related_ids  # Phase C
 
@@ -159,18 +159,13 @@ def _update_recall_meta_by_path(path: Path):
         fm["recall_count"] = fm.get("recall_count", 0) + 1
         fm["last_recalled"] = datetime.datetime.now().strftime("%Y-%m-%d")
 
-        # Phase A: decay_weight 活化
-        cfg = yaml.safe_load(
-            (Path(__file__).parent.parent / "diary" / "config" / "settings.yaml").read_text()
-        )
-        boost = cfg.get("decay", {}).get("recall_boost", 0.10)
+        # Phase A: decay_weight 活化（直接用已載入的模組層 CONFIG，不重讀 settings.yaml）
+        boost = CONFIG.get("decay", {}).get("recall_boost", 0.10)
         old_dw = float(fm.get("decay_weight", 1.0))
         fm["decay_weight"] = round(min(1.0, old_dw + boost), 4)
 
         fm_str_new = yaml.dump(fm, allow_unicode=True, sort_keys=False)
         path.write_text(f"---\n{fm_str_new}---{body}", encoding="utf-8")
-        # インクリメンタルインデックス更新
-        update_index_entry(path)
     except Exception:
         pass
 
@@ -269,6 +264,9 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
 
     if not entries:
         return []
+
+    # 自適應 RRF_K：小語料用小 k 拉開鑑別度；語料變大時自動回升
+    RRF_K = max(8, len(entries) // 4)
 
     query_words = query.split() if query else []
     # Phase B: entity 展開
@@ -384,7 +382,8 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
     VEC_TOP_K   = 5
     _vec_path   = ROOT / "diary" / "index" / "embeddings.npy"
     _vec_script = ROOT / "src" / "vec_search.py"
-    _vec_python = "/usr/local/bin/python3"
+    import os as _os
+    _vec_python = _os.environ.get("AI_DIARY_VEC_PYTHON", "/usr/local/bin/python3")
 
     if query_words and _vec_path.exists() and _vec_script.exists():
         try:
@@ -467,6 +466,9 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
             p = ROOT / e["path"]
             if p.exists():
                 _update_recall_meta_by_path(p)
+        # 批次寫回 frontmatter 完成後，整包索引只重建一次（而非每篇呼叫 update_index_entry）
+        from roi import build_index as _build_index
+        _build_index(verbose=False)
 
     return selected
 

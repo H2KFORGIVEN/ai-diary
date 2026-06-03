@@ -27,3 +27,10 @@ src/__pycache__/
 # 如果有人在本地測試時建立的臨時檔案
 *.tmp
 *.bak
+
+# 原始 buffer 備份（最敏感，務必忽略）
+diary/archive/
+# L2 scenario 檔（含個人記憶衍生內容）
+diary/scenarios/
+# 本地模型快取（~120MB，且 README 宣稱已 ignore）
+models/

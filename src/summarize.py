@@ -12,26 +12,28 @@ summarize.py — ai-diary — AI Character Diary System
 import argparse
 import datetime
 import re
+import sys
 from pathlib import Path
 from collections import Counter
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).parent))
+from roi import is_diary_entry
 
 ROOT = Path(__file__).parent.parent
 DIARY_ROOT = ROOT / "diary"
 SUMMARY_DIR = DIARY_ROOT / "summaries"
 SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG = yaml.safe_load((DIARY_ROOT / "config" / "settings.yaml").read_text())
-SKIP_FLASHBULB = CONFIG["summarize"]["skip_flashbulb"]
-WEEKLY_THRESHOLD = CONFIG["summarize"].get("weekly_threshold", 3)
+SKIP_FLASHBULB = CONFIG["summarize"]["skip_flashbulb"]   # 未接線：flashbulb 排除目前靠 normals 過濾隱性達成
+WEEKLY_THRESHOLD = CONFIG["summarize"].get("weekly_threshold", 3)  # 未接線：週報聚合門檻，待實作時接入
 
 
 def load_entries_in_range(start: datetime.date, end: datetime.date) -> list[dict]:
     entries = []
     for md in sorted(DIARY_ROOT.rglob("*.md")):
-        if "summaries" in md.parts or md.name == "self-narrative.md":
-            continue
-        if md.name.startswith("README"):
+        if not is_diary_entry(md):
             continue
         text = md.read_text(encoding="utf-8")
         if not text.startswith("---"):

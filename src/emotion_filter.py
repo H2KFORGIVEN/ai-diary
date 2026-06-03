@@ -63,9 +63,9 @@ def classify_emotion(emotion: str) -> tuple[str, str]:
         if emotion in ang.get(sub, []):
             return "anger", sub
 
-    # disgust（integrity_violation / harm_to_master）
+    # disgust（integrity_violation / harm_to_user）
     dis = ec.get("disgust", {})
-    for sub in ("integrity_violation", "harm_to_master"):
+    for sub in ("integrity_violation", "harm_to_user"):
         if emotion in dis.get(sub, []):
             return "disgust", sub
 
@@ -91,7 +91,7 @@ _VALENCE_MAP: dict[tuple[str, str], int] = {
     ("anger",   "injustice"):           -2,
     # disgust → 強負向
     ("disgust", "integrity_violation"): -7,
-    ("disgust", "harm_to_master"):      -8,
+    ("disgust", "harm_to_user"):      -8,
     # fallback：不明情緒 → 中性
     ("fallback",""):                     0,
 }
@@ -250,7 +250,7 @@ def _infer_category_from_context(context: str) -> tuple[str, str]:
         "injustice": ("anger", "injustice"),
         # disgust
         "integrity_violation": ("disgust", "integrity_violation"),
-        "harm_to_master": ("disgust", "harm_to_master"),
+        "harm_to_user": ("disgust", "harm_to_user"),
     }
     return mapping.get(context, ("fallback", ""))
 
@@ -265,7 +265,7 @@ if __name__ == "__main__":
         ("怒り",  6, "external"),
         ("理不尽", 5, "injustice"),
         ("嫌悪",  6, "integrity_violation"),
-        ("守りたい", 8, "harm_to_master"),
+        ("守りたい", 8, "harm_to_user"),
         ("驚喜",  7, "positive"),
         ("困惑",  4, "negative"),
         ("開心",  6, ""),   # fallback

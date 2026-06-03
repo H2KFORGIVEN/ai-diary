@@ -21,6 +21,9 @@ from collections import defaultdict
 from pathlib import Path
 
 import yaml
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from roi import is_diary_entry
 
 ROOT = Path(__file__).parent.parent
 DIARY_ROOT = ROOT / "diary"
@@ -38,9 +41,7 @@ def build_tag_graph(verbose: bool = False) -> dict[str, list[str]]:
     count = 0
 
     for md in sorted(DIARY_ROOT.rglob("*.md")):
-        if any(part in md.parts for part in ("summaries", "config")):
-            continue
-        if md.name.startswith("README") or md.name == "self-narrative.md":
+        if not is_diary_entry(md):
             continue
 
         try:
@@ -55,7 +56,7 @@ def build_tag_graph(verbose: bool = False) -> dict[str, list[str]]:
             diary_id = md.stem
             tags = fm.get("tags") or []
             for tag in tags:
-                if tag and tag not in graph[tag] or diary_id not in graph.get(tag, []):
+                if diary_id not in graph[tag]:
                     graph[tag].append(diary_id)
             count += 1
         except Exception:

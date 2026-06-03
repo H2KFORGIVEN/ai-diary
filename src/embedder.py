@@ -158,7 +158,9 @@ def encode_entry(entry: dict) -> np.ndarray:
         parts.append(preview)
 
     text = " ".join(parts)
-    return encode_query(text)  # passage: prefix でも OK、単体 encode は query 統一
+    # 注意：encode_entry 是正式流程外的輔助函式（build_vec_index 自己內聯組字串）
+    # 這裡用 query: 前綴——若要用 passage: 語意，應改為 encode_passages([text])[0]
+    return encode_query(text)
 
 
 def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:

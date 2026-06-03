@@ -26,6 +26,22 @@ DIARY_ROOT = ROOT / "diary"
 INDEX_PATH = DIARY_ROOT / "index" / "roi_index.json"
 INDEX_VERSION = 3  # Phase A: 新增 decay_weight 欄位
 
+# ── 日記ファイル判定ヘルパー ─────────────────────────────────────────
+_EXCLUDED_PARTS = {"summaries", "scenarios", "config"}
+_EXCLUDED_NAMES = {"self-narrative.md"}
+
+def is_diary_entry(md: Path) -> bool:
+    """
+    True iff the .md file is a genuine diary entry (not summaries / scenarios /
+    config / README / self-narrative).  Centralises the skip-rule so all scanners
+    stay in sync.
+    """
+    if any(part in md.parts for part in _EXCLUDED_PARTS):
+        return False
+    if md.name.startswith("README") or md.name in _EXCLUDED_NAMES:
+        return False
+    return True
+
 # ── 感情・顕著性キーワード（中日混用） ─────────────────────────────
 EMOTION_WORDS: list[str] = [
     # 日本語 / 肯定
@@ -152,11 +168,7 @@ def build_index(verbose: bool = True) -> int:
     entries: list[dict] = []
 
     for md in sorted(DIARY_ROOT.rglob("*.md")):
-        if "summaries" in md.parts:
-            continue
-        if md.name.startswith("README") or md.name == "self-narrative.md":
-            continue
-        if "config" in md.parts:
+        if not is_diary_entry(md):
             continue
         entry = index_one_entry(md)
         if entry:
@@ -200,9 +212,7 @@ def load_index() -> list[dict]:
     if not needs_rebuild:
         # stale チェック：.md の mtime と比較（stat のみ、read なし）
         for md in DIARY_ROOT.rglob("*.md"):
-            if "summaries" in md.parts or md.name.startswith("README"):
-                continue
-            if "config" in md.parts:
+            if not is_diary_entry(md):
                 continue
             if md.stat().st_mtime > index_mtime:
                 needs_rebuild = True
