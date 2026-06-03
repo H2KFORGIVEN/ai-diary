@@ -97,13 +97,14 @@ Entries marked `flashbulb: true`:
 - Decay **24× slower** than normal entries (730-day half-life vs 30-day)
 - Always surface in recall for significant emotional queries
 
-### 🔍 5-Layer Recall Engine
+### 🔍 6-Layer Recall Engine
 ```
 score = keyword_hits    × 0.30   # indexed keyword pool match
       + roi_match       × 0.20   # emotional peak sentence match + valence alignment
       + recency         × 0.20   # exponential decay (configurable half-life)
       + emotional       × 0.20   # emotional_intensity of the entry
       + valence_match   × 0.10   # directional valence alignment with query
+      + arousal_match   × 0.08   # arousal congruence — high-arousal query favors high-arousal memories
 ```
 All weights configurable in `diary/config/settings.yaml`.  
 **Core recall runs in ~15ms** via indexed keyword lookup — no vectors required.
@@ -379,7 +380,7 @@ Before recall runs, `roi.py` builds an index of each entry:
 
 This index is cached in `diary/index/roi_index.json` and rebuilt only when entries change.
 
-### Scoring (5-Axis)
+### Scoring (6-Axis)
 
 | Axis | Weight | Description |
 |------|--------|-------------|
@@ -388,14 +389,15 @@ This index is cached in `diary/index/roi_index.json` and rebuilt only when entri
 | decay_weight | 0.20 | Time-decayed importance (replaces raw recency — respects floor by intensity) |
 | emotional | 0.20 | Normalized `emotional_intensity` (÷ 10) |
 | valence_match | 0.10 | Directional match between query valence and entry valence |
+| arousal_match | 0.08 | Arousal congruence (0–10). Pass `--arousal N` to activate; omit = zero effect on ranking |
 
 All weights are configurable in `diary/config/settings.yaml`.
 
-### 5-Layer Fusion
+### 5-Layer Fusion (Score Axes: 6)
 
-Scores are fused using **RRF → Tag Graph → Scenario → Vec KNN → MMR**:
+Scores are fused using **RRF → Tag Graph → Scenario → Vec KNN → MMR** (arousal_match is a pure additive 6th axis; RRF uses ranks so total weight ≠ 1.0 is fine):
 
-1. **RRF (Reciprocal Rank Fusion)** — merges all 5 axis scores into a unified ranking (k=60)
+1. **RRF (Reciprocal Rank Fusion)** — merges all 6 axis scores into a unified ranking (k=60)
 2. **Tag Graph boost** — entries sharing tags with top-ranked candidates get a relevance bonus (max 3 related entries per seed tag, preventing high-frequency tag floods)
 3. **Scenario boost** *(optional)* — entries in the same narrative scenario as top-ranked candidates receive a relevance signal proportional to scenario emotional intensity (Layer 2.5)
 4. **Vector KNN boost** *(optional)* — `multilingual-e5-small` finds the top-K semantically nearest entries; each gets `VEC_BOOST × cosine_score` added to their RRF score (Layer 2.7). Only entries with cosine similarity ≥ 0.30 are boosted.

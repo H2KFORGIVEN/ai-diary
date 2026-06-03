@@ -103,12 +103,13 @@ score = keyword_hits    × 0.30   # 索引關鍵字池命中率
       + decay_weight    × 0.20   # 時間衰退重要性（取代原始 recency，含強度別底限）
       + emotional       × 0.20   # 日記的情感強度
       + valence_match   × 0.10   # 查詢 valence 與日記 valence 方向匹配
+      + arousal_match   × 0.08   # 喚起度一致性 — 高喚起 query 偏好高喚起記憶
 ```
 所有權重可在 `diary/config/settings.yaml` 中調整。  
 **核心召回速度約 15ms** — 透過索引關鍵字查詢，不需要向量資料庫。
 
-召回使用 **五層融合**策略：
-1. **RRF** — 互惠排名融合，整合五個維度分數
+召回使用 **五層融合**策略（計分維度：6）：
+1. **RRF** — 互惠排名融合，整合六個維度分數
 2. **Tag Graph** — 與頂排候選共享 tag 的日記獲得加成（每個 seed tag 最多 3 筆，防止高頻 tag 洪水）
 3. **Scenario 加成**（選用）— 與頂排候選屬於同一敘事場景的日記，根據場景情感強度獲得額外加成（Layer 2.5）
 4. **向量 KNN 加成**（選用）— `multilingual-e5-small` 找出語意最相近的日記並給予加成，捕捉關鍵字搜尋遺漏的同義詞（Layer 2.7）
@@ -383,14 +384,15 @@ last_recalled: null
 | decay_weight | 0.20 | 時間衰退重要性（取代原始 recency，含強度別底限保護） |
 | emotional | 0.20 | 正規化的 `emotional_intensity`（÷ 10） |
 | valence_match | 0.10 | 查詢 valence 與日記 valence 方向匹配度 |
+| arousal_match | 0.08 | 喚起度一致性（0–10）。傳入 `--arousal N` 啟用；不傳 = 對排序零影響 |
 
 所有權重都可在 `diary/config/settings.yaml` 中調整。
 
-### 五層融合
+### 五層融合（計分維度：6）
 
-分數透過 **RRF → Tag Graph → Scenario → Vec KNN → MMR** 融合：
+分數透過 **RRF → Tag Graph → Scenario → Vec KNN → MMR** 融合（arousal_match 為純加性第六軸；RRF 只看排名，總和不必 = 1.0）：
 
-1. **RRF（互惠排名融合）** — 整合五個維度分數（k=60）
+1. **RRF（互惠排名融合）** — 整合六個維度分數（k=60）
 2. **Tag Graph 加成** — 與頂排候選共享 tag 的日記獲得相關性加成（每個 seed tag 最多 3 筆）
 3. **Scenario 加成**（選用）— 與頂排候選屬於同一敘事場景的日記，根據場景情感強度獲得加成（Layer 2.5）
 4. **向量 KNN 加成**（選用）— `multilingual-e5-small` 找出語意最相近日記；cosine 相似度 ≥ 0.30 的才會被加成（Layer 2.7）

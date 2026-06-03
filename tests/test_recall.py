@@ -360,3 +360,31 @@ class TestEndToEnd:
         results = _recall("Nanoleaf 一起", top_k=5)
         assert isinstance(results, list)
         # クラッシュしないことが最低条件
+
+
+class TestArousal:
+    """第六召回軸：arousal_match 喚起度一致性テスト（純函式、CI フレンドリー）"""
+
+    def test_none_is_always_neutral(self):
+        from recall import _arousal_sim
+        # None 番兵は entry の値に関わらず常に 0.5 中性
+        assert _arousal_sim(0, None) == 0.5
+        assert _arousal_sim(10, None) == 0.5
+
+    def test_congruence(self):
+        from recall import _arousal_sim
+        # 高喚起 query は高喚起記憶を好む
+        assert _arousal_sim(9, 9) > _arousal_sim(1, 9)
+        # 完全一致は 1.0
+        assert abs(_arousal_sim(5, 5) - 1.0) < 1e-9
+
+    def test_zero_is_a_real_value(self):
+        from recall import _arousal_sim
+        # query=0（とても穏やか）は低喚起記憶を好む。0 を「未指定」と誤解してはいけない（坑 1）
+        assert _arousal_sim(0, 0) > _arousal_sim(10, 0)
+
+    def test_run_recall_accepts_arousal(self, roi_entries):
+        from recall import run_recall
+        r = run_recall("主様", top_k=5, tag_filter=None,
+                       update_meta=False, query_arousal=9)
+        assert isinstance(r, list)

@@ -98,19 +98,20 @@ ai-diaryはこれらの特性をAIキャラクターにもたらします：
 - 通常のエントリより**24倍ゆっくり減衰**（半減期730日 vs 30日）
 - 重要な感情クエリには常に浮かび上がる
 
-### 🔍 5軸リコールエンジン
+### 🔍 6軸リコールエンジン
 ```
 score = keyword_hits    × 0.30   # インデックスキーワードプールのヒット率
       + roi_match       × 0.20   # 感情ピーク文ヒット × valence整合ボーナス
       + decay_weight    × 0.20   # 時間減衰した重要度（強度別フロア付き）
       + emotional       × 0.20   # エントリのemotional_intensity
       + valence_match   × 0.10   # クエリvalenceとエントリvalenceの方向一致
+      + arousal_match   × 0.08   # 喚起度一致性 — 高喚起クエリは高喚起記憶を優先
 ```
 すべての重みは `diary/config/settings.yaml` で設定可能。  
 **コアリコールは約15ms** — インデックスキーワード検索のみ、ベクトルDB不要。
 
-リコールは **5層フュージョン** 戦略を使用：
-1. **RRF** — Reciprocal Rank Fusion で5軸スコアを統合ランキングに合成
+リコールは **5層フュージョン** 戦略を使用（スコア軸：6）：
+1. **RRF** — Reciprocal Rank Fusion で6軸スコアを統合ランキングに合成
 2. **Tag Graph** — 上位結果とタグを共有するエントリに関連性ブースト（共起グラフ）
 3. **Scenario ブースト** *（オプション）* — 上位候補と同じナラティブシナリオに属するエントリに追加の関連性シグナル（Layer 2.5）
 4. **Vector KNN ブースト** *（オプション）* — `multilingual-e5-small` で意味的に近いエントリを検出しブースト、キーワード検索が見逃す同義語を補完（Layer 2.7）
@@ -388,14 +389,15 @@ last_recalled: null
 | decay_weight | 0.20 | 時間減衰した重要度（生の日付ではなく、強度別フロア付きの減衰スコア） |
 | emotional | 0.20 | 正規化した `emotional_intensity`（÷ 10） |
 | valence_match | 0.10 | クエリvalenceとエントリvalenceの方向一致度 |
+| arousal_match | 0.08 | 喚起度一致性（0–10）。`--arousal N` で有効化；省略 = ランキングへの影響ゼロ |
 
 すべての重みは `diary/config/settings.yaml` で設定可能。
 
-### 5層フュージョン
+### 5層フュージョン（スコア軸：6）
 
-スコアは **RRF → Tag Graph → Scenario → Vec KNN → MMR** で融合されます：
+スコアは **RRF → Tag Graph → Scenario → Vec KNN → MMR** で融合されます（arousal_match は純加算式の第六軸；RRFはランクのみ使用するため重みの合計が1.0でなくても問題なし）：
 
-1. **RRF（Reciprocal Rank Fusion）** — 5軸スコア全てを統合ランキングに合成（k=60）
+1. **RRF（Reciprocal Rank Fusion）** — 6軸スコア全てを統合ランキングに合成（k=60）
 2. **Tag Graph ブースト** — 上位候補とタグを共有するエントリに関連性ボーナス（1つのシードタグあたり最大3件までブースト）
 3. **Scenario ブースト** *（オプション）* — 上位候補と同じナラティブシナリオのエントリに、シナリオ感情強度に比例した関連性シグナルを付与（Layer 2.5）
 4. **Vector KNN ブースト** *（オプション）* — `multilingual-e5-small` が意味的に最も近いエントリを検出；cosine類似度 ≥ 0.30のエントリのみブースト（Layer 2.7）

@@ -1,6 +1,6 @@
 # AI Diary System — 全域設定
 
-# Recall 評分權重（五維度加總 = 1.0）
+# Recall 評分權重（第六軸 arousal_match 為純加性；RRF 只看排名，總和不必=1.0）
 recall:
   weights:
     keyword:       0.30   # インデックス keyword pool ヒット（全文 grep 不要）
@@ -8,6 +8,7 @@ recall:
     recency:       0.20   # 日期越近越高（flashbulb は 730日半減）
     emotional:     0.20   # emotional_intensity 欄位
     valence_match: 0.10   # valence 方向匹配（論文 Anthropic 2026 啟發）
+    arousal_match: 0.08   # 第六維度：喚起度一致性(0–10)。未指定 --arousal 時對排序零影響
   top_k: 5
   recency_halflife_days: 30    # 一般記憶，30天半衰
 

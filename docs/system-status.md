@@ -117,15 +117,15 @@ Step 4: roi.py build_index() でインデックス更新
 ### 2.5 recall.py — 召回エンジン（Phase C）
 
 **役割**：クエリに対して関連日記を返す  
-**CLI**：`python src/recall.py "クエリ" [--tag T] [--top N] [--valence V] [--no-update] [--rebuild] [--json]`  
-**スコア式**：`recall_score = keyword×0.30 + roi×0.20 + recency×0.20 + emotional×0.20 + valence_match×0.10`
+**CLI**：`python src/recall.py "クエリ" [--tag T] [--top N] [--valence V] [--arousal A] [--no-update] [--rebuild] [--json]`  
+**スコア式**：`recall_score = keyword×0.30 + roi×0.20 + recency×0.20 + emotional×0.20 + valence_match×0.10 + arousal_match×0.08`
 
 **処理フロー（3層）**：
 ```
 Layer 1 — RRF（Reciprocal Rank Fusion）k=60
-  Strategy A：五次元スコア（完全版）
-  Strategy B：keyword + roi のみ（valence 無視）
-  Strategy C：emotional + valence_match のみ
+  Strategy A：六次元スコア（完全版）
+  Strategy B：keyword + roi のみ（valence/arousal 無視）
+  Strategy C：emotional + valence_match + arousal_match（情緒方向）
 
 Layer 2 — Tag Graph 擴散
   Strategy A top-3 の seed から同 tag 日記を boost（+0.05）

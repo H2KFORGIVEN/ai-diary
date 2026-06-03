@@ -93,6 +93,22 @@ def valence_score(entry: dict, query_valence: int) -> float:
     return _valence_sim(entry.get("valence", 0), query_valence)
 
 
+def _arousal_sim(entry_arousal: int, query_arousal: "int | None") -> float:
+    """喚起度一致スコア（0–10）。query_arousal=None → 0.5 中性（對排序無影響）。
+
+    ⚠️ valence は 0 を中性に使うが、arousal の 0 は「とても穏やか」という実値。
+       未指定の番兵は必ず None。0 にすると穏やかな記憶を誤って優遇してしまう。"""
+    if query_arousal is None:
+        return 0.5
+    q = max(0, min(10, query_arousal)) / 10.0
+    e = max(0, min(10, entry_arousal)) / 10.0
+    return max(0.0, min(1.0, 1.0 - abs(q - e)))
+
+
+def arousal_score(entry: dict, query_arousal: "int | None") -> float:
+    return _arousal_sim(entry.get("arousal", 5), query_arousal)
+
+
 def roi_score(query_words: list[str], entry: dict, query_valence: int) -> float:
     """
     ROI 文スコア（局所感情ピーク）。
@@ -121,7 +137,8 @@ def roi_score(query_words: list[str], entry: dict, query_valence: int) -> float:
 
 
 def recall_score_from_index(query_words: list[str], entry: dict,
-                             query_valence: int = 0) -> float:
+                             query_valence: int = 0,
+                             query_arousal: "int | None" = None) -> float:
     """インデックスエントリから直接スコアを計算（.md 読込不要）
 
     Phase A: recency 次元を decay_weight（stored）で置換。
@@ -137,12 +154,14 @@ def recall_score_from_index(query_words: list[str], entry: dict,
         r = recency_score(entry.get("date", ""), entry.get("flashbulb", False))
     e  = emotional_score(entry)
     v  = valence_score(entry, query_valence)
+    a  = arousal_score(entry, query_arousal)          # 第六維度
     w  = WEIGHTS
     return (w.get("keyword", 0.30) * k
           + w.get("roi",     0.20) * ri
           + w.get("recency", 0.20) * r
           + w.get("emotional", 0.20) * e
-          + w.get("valence_match", 0.10) * v)
+          + w.get("valence_match", 0.10) * v
+          + w.get("arousal_match", 0.08) * a)         # 第六維度
 
 
 # ── meta 更新（上位 K 件のみ .md を読む） ────────────────────────────
@@ -228,14 +247,15 @@ def format_result(rank: int, entry: dict, score: float,
 # ── メイン recall ─────────────────────────────────────────────────────
 
 def run_recall(query: str, top_k: int, tag_filter: str | None,
-               update_meta: bool, query_valence: int = 0) -> list[tuple[float, dict, str]]:
+               update_meta: bool, query_valence: int = 0,
+               query_arousal: "int | None" = None) -> list[tuple[float, dict, str]]:
     """
     Phase C 升級版三層 recall。
 
     Layer 1 — RRF 合議（多策略排名融合）：
-      - Strategy A：原始 query（五維度）
-      - Strategy B：keyword-only（純關鍵詞，不看 valence）
-      - Strategy C：valence-only（純情緒方向匹配）
+      - Strategy A：原始 query（六維度）
+      - Strategy B：keyword-only（純關鍵詞，不看 valence/arousal）
+      - Strategy C：valence + arousal + emotional（純情緒方向匹配）
       RRF 公式：score = Σ 1 / (k + rank_i)，k=60
 
     Layer 2 — Tag Graph 擴散：
@@ -251,7 +271,6 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
 
     戻り値：(score, entry_dict, scenario_label_or_empty_str) のリスト
     """
-    RRF_K = 60
     TAG_BOOST = 0.05
     MMR_LAMBDA = 0.7
     # 最大相似度門檻：同一天、同 title 前綴的記憶視為「過於相似」
@@ -274,9 +293,9 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
         query_words = entity_expand(query_words)
 
     # ── Layer 1: RRF ────────────────────────────────────────────────
-    # Strategy A: 完整五維度
+    # Strategy A: 完整六維度
     scores_a = {
-        e["id"]: recall_score_from_index(query_words, e, query_valence)
+        e["id"]: recall_score_from_index(query_words, e, query_valence, query_arousal)
         for e in entries
     }
     ranked_a = sorted(scores_a.items(), key=lambda x: x[1], reverse=True)
@@ -291,11 +310,12 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
     }
     ranked_b = sorted(scores_b.items(), key=lambda x: x[1], reverse=True)
 
-    # Strategy C: valence + emotional（情緒方向）
+    # Strategy C: valence + emotional + arousal（情緒方向）
     scores_c = {
         e["id"]: (
             WEIGHTS.get("emotional", 0.20) * emotional_score(e)
             + WEIGHTS.get("valence_match", 0.10) * valence_score(e, query_valence)
+            + WEIGHTS.get("arousal_match", 0.08) * arousal_score(e, query_arousal)
         )
         for e in entries
     }
@@ -482,6 +502,8 @@ def main():
     parser.add_argument("--top", type=int, default=TOP_K, help=f"回傳篇數（預設 {TOP_K}）")
     parser.add_argument("--valence", type=int, default=0,
                         help="當前情境 valence（-10～+10）")
+    parser.add_argument("--arousal", type=int, default=None,
+                        help="當前情境 arousal（0～10 喚起度）。不指定=不影響排序")
     parser.add_argument("--no-update", action="store_true", help="不更新 recall_count")
     parser.add_argument("--rebuild", action="store_true", help="強制重建 ROI index")
     parser.add_argument("--json", action="store_true", help="輸出 JSON")
@@ -499,6 +521,7 @@ def main():
         args.tag,
         update_meta=not args.no_update,
         query_valence=args.valence,
+        query_arousal=args.arousal,
     )
 
     if args.json:
