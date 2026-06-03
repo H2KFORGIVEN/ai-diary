@@ -505,6 +505,25 @@ Brown & Kulik（1977）發現，情感強烈、令人驚訝的事件會以異常
 
 ---
 
+## 更新記錄
+
+### 2026-06-03
+**Bug 修正**
+- **`consolidate.py`** — 修正 `group_medium()` 重篩邏輯，改用 `filtered_intensity` 而非原始 `intensity`，防止低喚醒事件在角色過濾後被錯誤提升
+- **`.gitignore`** — 補上遺漏的排除路徑：`diary/archive/`、`diary/scenarios/`、`models/`，防止私密日記資料被意外 commit
+- **`recall.py`** — 修正 RRF_K 從硬編碼的 `60`（為數千筆設計）改為自適應 `max(8, len(entries) // 4)`，防止小語料庫的分數塌縮問題（分數：0.048 → 0.34+）
+- **`emotion_filter.py`** — 統一 `harm_to_user` key（3 處使用了 `harm_to_master`）；protectiveness boost 現在可正確觸發
+- **`roi_index` I/O** — 以單次批次 `build_index` 呼叫取代逐筆 `update_index_entry` 迴圈（N 次 JSON 讀寫 → 1 次）
+- **`build_tag_graph.py`** — 修正去重條件中的運算子優先順序 bug（`not in` vs `!=`）；重複的 tag 邊不再出現
+- **未接線設定 / 死碼** — 對 `SKIP_FLASHBULB`、`WEEKLY_THRESHOLD`、`scenario.recall.weight` 等已定義但尚未接線的設定加上 comment 標注，防止靜默誤設
+- **`roi.py`** — 新增 `is_diary_entry()` helper，以單一 `_EXCLUDED_PARTS` + `_EXCLUDED_NAMES` 為唯一真實來源；四個掃描器（`roi.py`、`consolidate.py`、`build_tag_graph.py`、`summarize.py`）現在統一引用
+- **`vec_search.py`** — Python 路徑改為透過 `AI_DIARY_VEC_PYTHON` 環境變數設定（fallback：`/usr/local/bin/python3`），不再硬編碼
+
+**新功能**
+- **Arousal 第六召回軸** — 實作 Cahill & McGaugh（1996）：情感喚醒度高的記憶，在查詢情境喚醒度相近時會被優先召回。新增 `--arousal 1–10` CLI 參數；`_arousal_sim()` 評分加入 Strategy A 和 C，可透過 `arousal_match: 0.08` 調整權重。`None` 查詢 = 中性（0.5）哨兵值，省略參數時對分數零影響。`TestArousal` 已加入完整測試覆蓋。
+
+---
+
 ## 授權
 
 MIT

@@ -512,6 +512,25 @@ Please keep PRs focused and backward-compatible with the plain-Markdown entry fo
 
 ---
 
+## Changelog
+
+### 2026-06-03
+**Bug Fixes**
+- **`consolidate.py`** — Fixed `group_medium()` re-filter logic to use `filtered_intensity` instead of raw `intensity`, preventing low-arousal events from being incorrectly promoted after character filtering
+- **`.gitignore`** — Added missing exclusions for `diary/archive/`, `diary/scenarios/`, and `models/` to prevent accidental commits of private diary data
+- **`recall.py`** — Fixed RRF_K from hardcoded `60` (designed for thousands of entries) to adaptive `max(8, len(entries) // 4)`; prevents score collapse on small corpora (score: 0.048 → 0.34+)
+- **`emotion_filter.py`** — Unified `harm_to_user` key (3 locations used `harm_to_master`); protectiveness boost now correctly activates
+- **`roi_index` I/O** — Replaced per-entry `update_index_entry` loop (N JSON reads + writes) with a single batched `build_index` call
+- **`build_tag_graph.py`** — Fixed operator-precedence bug in dedup condition (`not in` vs `!=`); duplicate tag edges no longer appear
+- **Dead config / dead code** — Annotated `SKIP_FLASHBULB`, `WEEKLY_THRESHOLD`, and `scenario.recall.weight` settings that are defined but not yet wired; prevents silent misconfigurations
+- **`roi.py`** — Introduced `is_diary_entry()` helper with a single `_EXCLUDED_PARTS` + `_EXCLUDED_NAMES` source of truth; all four scanners (`roi.py`, `consolidate.py`, `build_tag_graph.py`, `summarize.py`) now use it
+- **`vec_search.py`** — Python path is now configurable via the `AI_DIARY_VEC_PYTHON` environment variable (fallback: `/usr/local/bin/python3`) instead of being hardcoded
+
+**New Feature**
+- **Arousal as 6th recall axis** — Implements Cahill & McGaugh (1996): emotionally arousing memories are recalled more readily when the query shares similar arousal level. New `--arousal 1–10` CLI flag; `_arousal_sim()` scoring added to Strategies A and C with a configurable `arousal_match: 0.08` weight. `None` query = neutral (0.5) sentinel, so omitting the flag causes zero score impact. Full test coverage added in `TestArousal`.
+
+---
+
 ## License
 
 MIT
