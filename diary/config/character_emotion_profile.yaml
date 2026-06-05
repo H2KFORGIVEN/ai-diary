@@ -112,6 +112,7 @@ emotion_classification:
       - 發現
       - 驚喜
       - 感動
+      - 開心
     negative:
       - 困惑
       - 戸惑い

@@ -76,7 +76,45 @@ def append_event(
     with BUFFER_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    # ── persona-engine FIFO push（非阻塞；daemon 若未啟動就靜默）────────
+    _push_to_persona(entry)
+
     return entry
+
+
+def _push_to_persona(entry: dict) -> None:
+    """把事件即時推給 persona daemon（FIFO，非阻塞）。
+    daemon 未啟動時靜默忽略——不影響 buffer 本體。
+    """
+    try:
+        import os
+        fifo_path = Path.home() / "Projects" / "persona-engine" / "state" / "events.fifo"
+        if not fifo_path.exists():
+            return
+        # 從 emotion 詞推 valence，讓 persona 即時心情有正負方向（夜間 consolidate 仍走 roi_index 真值）。
+        # 自帶 try/except + fallback 0：映射失敗也照常 push，絕不影響 buffer 本體。
+        _valence = 0
+        try:
+            from emotion_filter import classify_emotion, emotion_to_valence
+            _emo = entry.get("emotion", "")
+            if _emo:
+                _cat, _sub = classify_emotion(_emo)
+                _valence = emotion_to_valence(_cat, _sub, int(entry.get("intensity", 5)))
+        except Exception:
+            _valence = 0
+        payload = json.dumps({
+            "text":      entry.get("event", ""),
+            "valence":   _valence,                # 由 buffer emotion 經 emotion_filter 映射
+            "arousal":   float(entry.get("intensity", 5)),
+            "intensity": float(entry.get("intensity", 5)),
+            "tags":      entry.get("tags", []),
+        }, ensure_ascii=False)
+        # O_WRONLY | O_NONBLOCK：沒有 reader 時立即返回 ENXIO，不掛住
+        fd = os.open(str(fifo_path), os.O_WRONLY | os.O_NONBLOCK)
+        os.write(fd, (payload + "\n").encode())
+        os.close(fd)
+    except Exception:
+        pass  # daemon 未啟動、FIFO 不存在、ENXIO — 全部靜默
 
 
 def load_buffer() -> list[dict]:
