@@ -86,6 +86,9 @@ def _push_to_persona(entry: dict) -> None:
     """把事件即時推給 persona daemon（FIFO，非阻塞）。
     daemon 未啟動時靜默忽略——不影響 buffer 本體。
     """
+    # 迴圈斷點：self_outreach 事件不回授（防止自發開口被自己再次點燃）
+    if "self_outreach" in (entry.get("tags") or []):
+        return
     try:
         import os
         fifo_path = Path.home() / "Projects" / "persona-engine" / "state" / "events.fifo"
