@@ -110,9 +110,11 @@ def _push_to_persona(entry: dict) -> None:
     }, ensure_ascii=False)
 
     # FIFO push（O_WRONLY | O_NONBLOCK：沒有 reader 時立即返回 ENXIO，不掛住）
+    # 絕對路徑：buffer.py 從 hermes session 執行，$HOME = profile home ≠ 主様 HOME
+    _PERSONA_STATE = Path("/Users/showmaker/Projects/persona-engine/state")
     try:
         import os
-        fifo_path = Path.home() / "Projects" / "persona-engine" / "state" / "events.fifo"
+        fifo_path = _PERSONA_STATE / "events.fifo"
         if not fifo_path.exists():
             raise FileNotFoundError("fifo not found")
         fd = os.open(str(fifo_path), os.O_WRONLY | os.O_NONBLOCK)
@@ -122,7 +124,7 @@ def _push_to_persona(entry: dict) -> None:
         # daemon 未啟動、FIFO 不存在、ENXIO — fallback 寫 spool（daemon 重啟後補讀）
         # FIFO 寫成功時不寫 spool（fallback-only → 讀端免去重）
         try:
-            spool = Path.home() / "Projects" / "persona-engine" / "state" / "events_spool.jsonl"
+            spool = _PERSONA_STATE / "events_spool.jsonl"
             with open(str(spool), "a", encoding="utf-8") as _f:
                 _f.write(payload + "\n")
         except Exception:

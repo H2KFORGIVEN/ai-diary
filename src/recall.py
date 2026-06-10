@@ -404,6 +404,7 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
     _vec_script = ROOT / "src" / "vec_search.py"
     import os as _os
     _vec_python = _os.environ.get("AI_DIARY_VEC_PYTHON", "/usr/local/bin/python3")
+    _cos_map: dict = {}   # entry_id → cosine（vec 鏈路未啟動時空 dict）
 
     if query_words and _vec_path.exists() and _vec_script.exists():
         try:
@@ -415,7 +416,9 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
             )
             if _proc.returncode == 0 and _proc.stdout.strip():
                 _vec_results = _json.loads(_proc.stdout.strip())
+                _cos_map: dict = {}                        # entry_id → cosine（門檻前全記）
                 for _vscore, _veid, _vtitle in _vec_results:
+                    _cos_map[str(_veid)] = _vscore         # 無論是否過門檻都記，輸出時注入
                     if _vscore < 0.30:          # 低信頼度はスキップ
                         continue
                     if str(_veid).startswith("scn-"):  # scenario は除外
@@ -480,6 +483,10 @@ def run_recall(query: str, top_k: int, tag_filter: str | None,
 
     # 最終按分數降序排列
     selected.sort(key=lambda x: x[0], reverse=True)
+
+    # cosine 注入：把 vec_search 的純語意相似度寫進 entry（供 --json 輸出；不影響排序）
+    for _, e, _ in selected:
+        e["_cosine"] = _cos_map.get(str(e.get("id")), 0.0)
 
     if update_meta:
         for _, e, _ in selected:
