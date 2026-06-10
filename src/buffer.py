@@ -84,40 +84,49 @@ def append_event(
 
 def _push_to_persona(entry: dict) -> None:
     """把事件即時推給 persona daemon（FIFO，非阻塞）。
-    daemon 未啟動時靜默忽略——不影響 buffer 本體。
+    daemon 未啟動時 fallback 寫 spool，daemon 重啟後自動補讀——不影響 buffer 本體。
     """
     # 迴圈斷點：self_outreach 事件不回授（防止自發開口被自己再次點燃）
     if "self_outreach" in (entry.get("tags") or []):
         return
+
+    # 先在 try 外構建 payload，讓 fallback except 也能取到
+    _valence = 0
+    try:
+        from emotion_filter import classify_emotion, emotion_to_valence
+        _emo = entry.get("emotion", "")
+        if _emo:
+            _cat, _sub = classify_emotion(_emo)
+            _valence = emotion_to_valence(_cat, _sub, int(entry.get("intensity", 5)))
+    except Exception:
+        _valence = 0
+
+    payload = json.dumps({
+        "text":      entry.get("event", ""),
+        "valence":   _valence,                # 由 buffer emotion 經 emotion_filter 映射
+        "arousal":   float(entry.get("intensity", 5)),
+        "intensity": float(entry.get("intensity", 5)),
+        "tags":      entry.get("tags", []),
+    }, ensure_ascii=False)
+
+    # FIFO push（O_WRONLY | O_NONBLOCK：沒有 reader 時立即返回 ENXIO，不掛住）
     try:
         import os
         fifo_path = Path.home() / "Projects" / "persona-engine" / "state" / "events.fifo"
         if not fifo_path.exists():
-            return
-        # 從 emotion 詞推 valence，讓 persona 即時心情有正負方向（夜間 consolidate 仍走 roi_index 真值）。
-        # 自帶 try/except + fallback 0：映射失敗也照常 push，絕不影響 buffer 本體。
-        _valence = 0
-        try:
-            from emotion_filter import classify_emotion, emotion_to_valence
-            _emo = entry.get("emotion", "")
-            if _emo:
-                _cat, _sub = classify_emotion(_emo)
-                _valence = emotion_to_valence(_cat, _sub, int(entry.get("intensity", 5)))
-        except Exception:
-            _valence = 0
-        payload = json.dumps({
-            "text":      entry.get("event", ""),
-            "valence":   _valence,                # 由 buffer emotion 經 emotion_filter 映射
-            "arousal":   float(entry.get("intensity", 5)),
-            "intensity": float(entry.get("intensity", 5)),
-            "tags":      entry.get("tags", []),
-        }, ensure_ascii=False)
-        # O_WRONLY | O_NONBLOCK：沒有 reader 時立即返回 ENXIO，不掛住
+            raise FileNotFoundError("fifo not found")
         fd = os.open(str(fifo_path), os.O_WRONLY | os.O_NONBLOCK)
         os.write(fd, (payload + "\n").encode())
         os.close(fd)
     except Exception:
-        pass  # daemon 未啟動、FIFO 不存在、ENXIO — 全部靜默
+        # daemon 未啟動、FIFO 不存在、ENXIO — fallback 寫 spool（daemon 重啟後補讀）
+        # FIFO 寫成功時不寫 spool（fallback-only → 讀端免去重）
+        try:
+            spool = Path.home() / "Projects" / "persona-engine" / "state" / "events_spool.jsonl"
+            with open(str(spool), "a", encoding="utf-8") as _f:
+                _f.write(payload + "\n")
+        except Exception:
+            pass  # spool 寫失敗也靜默，不影響 buffer 本體
 
 
 def load_buffer() -> list[dict]:

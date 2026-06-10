@@ -528,7 +528,9 @@ def main():
         output = []
         for score, e, scn_label in results:
             output.append({
+                "id":                e.get("id"),
                 "score":             round(score, 4),
+                "cosine":            round(e.get("_cosine", 0.0), 4),  # e5-small 純語意相似度（vec_search 注入）
                 "date":              e.get("date"),
                 "title":             e.get("title"),
                 "tags":              e.get("tags", []),

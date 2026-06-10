@@ -509,6 +509,23 @@ def consolidate(
         except Exception as e:
             print(f"⚠️  Vector Index 更新失敗（非致命）: {e}")
 
+    # Step 9: persona consolidate-hook（drift + reflect + goals + outreach）
+    if not dry_run:
+        try:
+            import subprocess as _sp
+            _persona_py = "/Users/showmaker/Projects/persona-engine/src/persona.py"
+            _persona_python = "/Users/showmaker/.hermes/hermes-agent/venv/bin/python3"
+            _result = _sp.run(
+                [_persona_python, _persona_py, "consolidate-hook"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if _result.returncode == 0:
+                print("🧠  Persona consolidate-hook: ok")
+            else:
+                print(f"⚠️  Persona consolidate-hook 失敗: {_result.stderr[:100]}")
+        except Exception as e:
+            print(f"⚠️  Persona consolidate-hook 失敗（非致命）: {e}")
+
     return written
 
 
