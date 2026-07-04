@@ -26,6 +26,7 @@ buffer.py — ai-diary — AI Character Diary System
 import argparse
 import datetime
 import json
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -147,10 +148,28 @@ def load_buffer() -> list[dict]:
     return entries
 
 
+def _unique_archive_path(archive_dir: Path, today: str) -> Path:
+    """
+    產生不會覆寫既有檔案的 archive 路徑。
+    同一天第一次呼叫回傳 {today}_buffer.jsonl；
+    若當天已存在（例如同日 consolidate 補跑兩次），改用 -2 / -3 … 序號後綴，
+    避免覆寫先前的 archive 內容。
+    """
+    base = archive_dir / f"{today}_buffer.jsonl"
+    if not base.exists():
+        return base
+    n = 2
+    while True:
+        cand = archive_dir / f"{today}_buffer-{n}.jsonl"
+        if not cand.exists():
+            return cand
+        n += 1
+
+
 def clear_buffer(archive: bool = True):
     """
     清空 buffer。
-    archive=True 時先備份到 diary/archive/YYYY-MM-DD_buffer.jsonl
+    archive=True 時先備份到 diary/archive/YYYY-MM-DD_buffer.jsonl（同日重複執行時序號遞增，不覆寫）。
     """
     if not BUFFER_PATH.exists():
         return
@@ -159,10 +178,56 @@ def clear_buffer(archive: bool = True):
         today = datetime.date.today().isoformat()
         archive_dir = ROOT / "diary" / "archive"
         archive_dir.mkdir(parents=True, exist_ok=True)
-        archive_path = archive_dir / f"{today}_buffer.jsonl"
+        archive_path = _unique_archive_path(archive_dir, today)
         archive_path.write_bytes(BUFFER_PATH.read_bytes())
 
     BUFFER_PATH.unlink()
+
+
+def snapshot_buffer() -> Path | None:
+    """
+    把目前的 raw_buffer.jsonl 原子搬移成 diary/batch-<YYYYmmdd_HHMMSS>.jsonl 快照。
+
+    用途：consolidate.py 鞏固期間，避免「讀取 buffer → 逐篇寫日記 → 清空整個 buffer」
+    這段期間新寫入的事件被一併清掉（競態條件）。呼叫此函式後，
+    後續 append_event() 會寫進全新的 raw_buffer.jsonl，不受鞏固處理影響。
+
+    os.replace() 在同一檔案系統內是原子操作（POSIX rename(2) 語意），
+    不會有「搬到一半」的中間狀態。
+
+    Returns
+    -------
+    快照檔路徑；若當下沒有 buffer 可搬（檔案不存在）則回傳 None。
+    """
+    if not BUFFER_PATH.exists():
+        return None
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    snapshot_path = ROOT / "diary" / f"batch-{ts}.jsonl"
+    # 同一秒內重複呼叫的極端情況：加序號避免覆寫
+    n = 2
+    while snapshot_path.exists():
+        snapshot_path = ROOT / "diary" / f"batch-{ts}-{n}.jsonl"
+        n += 1
+
+    os.replace(BUFFER_PATH, snapshot_path)
+    return snapshot_path
+
+
+def load_snapshot(snapshot_path: Path) -> list[dict]:
+    """載入指定快照檔的所有事件（格式與 load_buffer 相同）"""
+    if not snapshot_path.exists():
+        return []
+    entries = []
+    for line in snapshot_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
 
 
 def show_buffer():
@@ -208,7 +273,7 @@ def main():
         meta = {}
         if hasattr(args, "msg_count") and args.msg_count:
             meta["msg_count"] = args.msg_count
-        e = append_event(args.event, args.intensity, args.tags, args.emotion, meta or None)
+        e = append_event(args.event, args.intensity, args.tags, args.emotion, meta=meta or None)
         print(f"✅ 已記錄：[{e['t'][11:16]}] {e['event']} (強度 {e['intensity']})")
 
     elif args.cmd == "show":

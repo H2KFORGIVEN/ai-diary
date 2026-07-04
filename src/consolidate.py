@@ -36,7 +36,7 @@ DIARY_ROOT = ROOT / "diary"
 
 # 動態 import（避免在 write_diary 裡重複定義路徑）
 sys.path.insert(0, str(ROOT / "src"))
-from buffer import load_buffer, clear_buffer
+from buffer import load_buffer, clear_buffer, snapshot_buffer, load_snapshot, _unique_archive_path
 from write_diary import write_entry
 from emotion_filter import apply_filter
 from roi import is_diary_entry
@@ -167,6 +167,19 @@ def update_all_decay_weights(dry_run: bool = False) -> int:
     return updated
 
 
+def _archive_snapshot(snapshot_path: Path) -> Path:
+    """
+    把已處理完成的 buffer 快照備份進 diary/archive/YYYY-MM-DD_buffer.jsonl。
+    同日多次鞏固（例如同日 append 多批、consolidate 跑多次）時序號遞增，不覆寫先前備份。
+    """
+    today = datetime.date.today().isoformat()
+    archive_dir = DIARY_ROOT / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = _unique_archive_path(archive_dir, today)
+    archive_path.write_bytes(snapshot_path.read_bytes())
+    return archive_path
+
+
 # ── 閾值設定 ─────────────────────────────────────────
 DISCARD_THRESHOLD = 3    # ≤ 3：丟棄
 MERGE_THRESHOLD   = 6    # 4-6：聚合
@@ -282,6 +295,7 @@ def synthesize_merged_entry(group: list[dict], date: datetime.date) -> dict:
         "intensity": avg_intensity,
         "flashbulb": False,
         "date": date,
+        "t": group[0].get("t", "") if group else "",
         "valence": round(sum(e.get("filter_valence", 0) for e in group) / len(group)) if group else 0,
     }
 
@@ -315,6 +329,7 @@ def synthesize_strong_entry(event: dict, date: datetime.date) -> dict:
         "intensity": event.get("filtered_intensity", event["intensity"]),
         "flashbulb": event.get("filter_flashbulb", False),
         "date":      date,
+        "t":         event.get("t", ""),
         "valence":   event.get("filter_valence", 0),
     }
 
@@ -343,6 +358,7 @@ def synthesize_flashbulb_entry(event: dict, date: datetime.date) -> dict:
         "flashbulb":      True,
         "first_reaction": event.get("filtered_emotion", event.get("emotion", "")),
         "date":           date,
+        "t":              event.get("t", ""),
         "valence":        event.get("filter_valence", 0),
     }
 
@@ -355,7 +371,13 @@ def consolidate(
     """
     主流程：buffer → diary entries
     回傳寫入的檔案路徑清單
+
+    競態防護：非 archive_path 模式且非 dry_run 時，開頭會先把 raw_buffer.jsonl
+    原子搬移（os.replace）成 diary/batch-<timestamp>.jsonl 快照，只處理快照內容。
+    鞏固期間新寫入的事件會落進全新的 raw_buffer.jsonl，不會被本次處理誤刪。
     """
+    snapshot_path: Path | None = None
+
     if archive_path:
         # 從指定 archive 讀取（--date 模式）
         if not archive_path.exists():
@@ -369,11 +391,18 @@ def consolidate(
                     events.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
-    else:
+    elif dry_run:
+        # dry-run 不消費 buffer，直接預覽，不需要快照
         events = load_buffer()
+    else:
+        # 正式鞏固：原子快照，避免鞏固期間新事件被一併清掉
+        snapshot_path = snapshot_buffer()
+        events = load_snapshot(snapshot_path) if snapshot_path else []
 
     if not events:
         print("📭 今日 buffer 是空的，無需 consolidate")
+        # 快照後發現是空的（理論上不會發生，snapshot_buffer 已檢查存在性）
+        # 仍保留快照以便人工檢查，不靜默刪除
         return []
 
     if date is None:
@@ -424,11 +453,32 @@ def consolidate(
     # Step 3: 寫入 diary
     written = []
     for spec in entry_specs:
-        dt = datetime.datetime(
-            spec["date"].year,
-            spec["date"].month,
-            spec["date"].day,
-        )
+        # buffer の実時刻（ISO "YYYY-MM-DDTHH:MM:SS"）を復元してファイル名に反映。
+        # 時刻が取れない場合のみ 00:00 fallback（連番サフィックスで上書き回避）。
+        spec_t = spec.get("t", "")
+        if spec_t and len(spec_t) >= 16:
+            try:
+                parsed = datetime.datetime.fromisoformat(spec_t)
+                dt = datetime.datetime(
+                    spec["date"].year,
+                    spec["date"].month,
+                    spec["date"].day,
+                    parsed.hour,
+                    parsed.minute,
+                    parsed.second,
+                )
+            except ValueError:
+                dt = datetime.datetime(
+                    spec["date"].year,
+                    spec["date"].month,
+                    spec["date"].day,
+                )
+        else:
+            dt = datetime.datetime(
+                spec["date"].year,
+                spec["date"].month,
+                spec["date"].day,
+            )
         path = write_entry(
             title=spec["title"],
             body=spec["body"],
@@ -441,10 +491,14 @@ def consolidate(
         )
         written.append(path)
 
-    # Step 4: 清空 buffer
+    # Step 4: 處理快照 —— 備份後刪除（非 archive_path 模式）
     if not archive_path:
-        clear_buffer(archive=True)
-        print(f"\n✅ 寫入 {len(written)} 篇，buffer 已清空並備份")
+        if snapshot_path and snapshot_path.exists():
+            _archive_snapshot(snapshot_path)
+            snapshot_path.unlink()
+            print(f"\n✅ 寫入 {len(written)} 篇，快照已備份並清除")
+        else:
+            print(f"\n✅ 寫入 {len(written)} 篇")
     else:
         print(f"\n✅ 寫入 {len(written)} 篇（archive 模式，不清空 buffer）")
 

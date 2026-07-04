@@ -47,7 +47,16 @@ def get_entry_path(dt: datetime.datetime) -> Path:
     hour = dt.strftime("%H%M")
     dir_path = DIARY_ROOT / year / month
     dir_path.mkdir(parents=True, exist_ok=True)
-    return dir_path / f"{year}-{month}-{day}_{hour}.md"
+    base = dir_path / f"{year}-{month}-{day}_{hour}.md"
+    if not base.exists():
+        return base
+    # 同分内に複数 entry がある場合のファイル名衝突回避（連番サフィックス）
+    n = 2
+    while True:
+        cand = dir_path / f"{year}-{month}-{day}_{hour}-{n}.md"
+        if not cand.exists():
+            return cand
+        n += 1
 
 
 def build_frontmatter(

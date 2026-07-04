@@ -14,6 +14,8 @@ diary/self-narrative.md
 diary/raw_buffer.jsonl
 diary/buffer.jsonl
 diary/buffer.json
+# consolidate 鞏固期間的原子快照（batch-<timestamp>.jsonl，敏感度同 raw_buffer）
+diary/batch-*.jsonl
 
 # ROI 索引（含日記摘要）
 diary/index/
@@ -34,3 +36,6 @@ diary/archive/
 diary/scenarios/
 # 本地模型快取（~120MB，且 README 宣稱已 ignore）
 models/
+
+# Obsidian vault 個人設定（非引擎資料，純本地 UI 狀態）
+.obsidian/

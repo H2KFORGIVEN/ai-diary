@@ -72,6 +72,8 @@ scenario:
   # recall.py Strategy D 設定
   recall:
     enabled: true
-    weight: 0.35                   # RRF 相對權重（未接線：recall.py 實際用寫死的 SCENARIO_BOOST=0.08，待後續統一）
+    # 注意：Scenario Boost 的權重「不在」這裡設定（此處任何 weight 欄位引擎都不會讀）。
+    # 實際 boost 寫死在 src/recall.py 的 SCENARIO_BOOST=0.08（調校過的甜蜜點，議會裁定不接 config）。
+    # 如要調整請直接改 recall.py 並跑 fixtures 比對。
     drill_down: true
     drill_down_top: 2
